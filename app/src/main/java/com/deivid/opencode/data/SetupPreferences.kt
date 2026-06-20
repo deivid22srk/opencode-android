@@ -6,6 +6,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -31,7 +32,7 @@ class SetupPreferences(private val context: Context) {
         private val WORKSPACE_URI = stringPreferencesKey("workspace_uri")
         private val WORKSPACE_PATH = stringPreferencesKey("workspace_path")
         private val BINARY_VERSION = stringPreferencesKey("binary_version")
-        private val BINARY_IMPORTED_AT = stringPreferencesKey("binary_imported_at")
+        private val BINARY_IMPORTED_AT = longPreferencesKey("binary_imported_at")
     }
 
     val data: Flow<SetupData> = context.setupDataStore.data.map { p ->
