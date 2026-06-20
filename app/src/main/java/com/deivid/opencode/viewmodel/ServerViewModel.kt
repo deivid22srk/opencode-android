@@ -13,6 +13,7 @@ import androidx.lifecycle.viewModelScope
 import com.deivid.opencode.server.BinaryInfo
 import com.deivid.opencode.server.BinaryManager
 import com.deivid.opencode.server.OpencodeService
+import com.deivid.opencode.server.Paths
 import com.deivid.opencode.server.ServerEvent
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,6 +30,7 @@ data class ServerState(
     val port: Int = 4096,
     val hostname: String = "127.0.0.1",
     val password: String = "",
+    val workspacePath: String = "",
     val url: String? = null,
     val errorMessage: String? = null,
     val logs: String = "",
@@ -41,7 +43,15 @@ class ServerViewModel(app: Application) : AndroidViewModel(app) {
     private val binaryManager = BinaryManager(app)
     private var service: OpencodeService? = null
 
-    private val _state = MutableStateFlow(ServerState(binary = binaryManager.currentBinary()))
+    private val _state = MutableStateFlow(
+        ServerState(
+            binary = binaryManager.currentBinary(),
+            // Default workspace is the app-private sandbox folder. The user
+            // can override this in the UI if they want opencode to operate on
+            // a different project root.
+            workspacePath = Paths.workspaceDir(app).absolutePath,
+        )
+    )
     val state: StateFlow<ServerState> = _state.asStateFlow()
 
     private val logBuilder = StringBuilder()
@@ -98,6 +108,10 @@ class ServerViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(password = password)
     }
 
+    fun updateWorkspacePath(path: String) {
+        _state.value = _state.value.copy(workspacePath = path.trim())
+    }
+
     fun importRelease(uri: Uri) {
         _state.value = _state.value.copy(importBusy = true, importMessage = null)
         viewModelScope.launch {
@@ -132,7 +146,13 @@ class ServerViewModel(app: Application) : AndroidViewModel(app) {
             _state.value = s.copy(errorMessage = "Import the opencode binary first")
             return
         }
-        OpencodeService.start(context, s.port, s.hostname, s.password.ifBlank { null })
+        OpencodeService.start(
+            context = context,
+            port = s.port,
+            hostname = s.hostname,
+            password = s.password.ifBlank { null },
+            workspace = s.workspacePath.ifBlank { null },
+        )
     }
 
     fun stopServer(context: Context) {

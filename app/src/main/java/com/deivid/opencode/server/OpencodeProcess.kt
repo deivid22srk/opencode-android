@@ -70,11 +70,17 @@ class OpencodeProcess(private val context: Context) {
      * The opencode CLI prints `opencode server listening on http://...` to
      * stdout when it's ready. We watch stdout for that line and resolve as
      * soon as we see it (or fail if the process exits first).
+     *
+     * @param workingDirectory the directory opencode should treat as the
+     *   default project root. Becomes `process.cwd()` for the child process
+     *   and is what opencode uses when a request arrives without an
+     *   `x-opencode-directory` header. Defaults to a sandbox dir we own.
      */
     fun start(
         port: Int,
         hostname: String,
         password: String?,
+        workingDirectory: File? = null,
         onLog: (String) -> Unit,
     ): Result<String> = runCatching {
         if (isRunning()) error("Server is already running")
@@ -93,6 +99,15 @@ class OpencodeProcess(private val context: Context) {
             error("opencode binary not imported or not executable")
         }
         val libDir = Paths.libDir(context)
+
+        // Default working directory: an app-private folder we own. opencode
+        // uses process.cwd() as the project root when no x-opencode-directory
+        // header is sent — so we MUST give it a real, writable directory.
+        val workDir = workingDirectory ?: Paths.workspaceDir(context)
+        workDir.mkdirs()
+        if (!workDir.isDirectory) {
+            error("Working directory does not exist or is not a directory: ${workDir.absolutePath}")
+        }
 
         Paths.logsDir(context).mkdirs()
         val logFile = Paths.logFile(context)
@@ -119,6 +134,10 @@ class OpencodeProcess(private val context: Context) {
         )
 
         val pb = ProcessBuilder(cmd).apply {
+            // Set the working directory to the workspace folder. This is what
+            // opencode uses as the default project root (process.cwd()).
+            directory(workDir)
+
             // Force a writable HOME inside app-private storage so opencode
             // doesn't try to write to /root or /home.
             val home = Paths.configDir(context).apply { mkdirs() }
@@ -130,6 +149,12 @@ class OpencodeProcess(private val context: Context) {
             environment()["XDG_CACHE_HOME"] = context.cacheDir.absolutePath
             // Disable opencode's auto-update path; we manage versions manually
             environment()["OPENCODE_DISABLE_UPDATE"] = "1"
+            // Disable project config discovery so opencode doesn't try to read
+            // opencode.json from arbitrary parent directories of the workspace.
+            environment()["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
+            // Tell opencode we don't want auto-update checks (which would try
+            // to phone home and might pull a different binary version).
+            environment()["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
             if (!password.isNullOrBlank()) {
                 environment()["OPENCODE_SERVER_PASSWORD"] = password
             }

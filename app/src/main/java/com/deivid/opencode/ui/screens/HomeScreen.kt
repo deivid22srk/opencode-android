@@ -206,6 +206,7 @@ fun HomeScreen(
                 onPortChange = viewModel::updatePort,
                 onHostnameChange = viewModel::updateHostname,
                 onPasswordChange = viewModel::updatePassword,
+                onWorkspaceChange = viewModel::updateWorkspacePath,
                 onStart = { viewModel.startServer(context) },
                 onStop = { viewModel.stopServer(context) },
             )
@@ -433,6 +434,7 @@ private fun SettingsSection(
     onPortChange: (Int) -> Unit,
     onHostnameChange: (String) -> Unit,
     onPasswordChange: (String) -> Unit,
+    onWorkspaceChange: (String) -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
 ) {
@@ -464,6 +466,20 @@ private fun SettingsSection(
                     enabled = !running,
                 )
             }
+            OutlinedTextField(
+                value = state.workspacePath,
+                onValueChange = onWorkspaceChange,
+                label = { Text("Working directory") },
+                supportingText = {
+                    Text(
+                        "opencode uses this as the default project root. " +
+                            "Must be a writable path the app can access.",
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                enabled = !running,
+            )
             OutlinedTextField(
                 value = state.password,
                 onValueChange = onPasswordChange,

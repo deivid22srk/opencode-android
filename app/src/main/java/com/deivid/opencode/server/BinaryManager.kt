@@ -52,6 +52,12 @@ object Paths {
     fun logFile(ctx: Context) = File(logsDir(ctx), "server.log")
 
     /**
+     * Default workspace directory — the project root opencode will operate on
+     * when no `x-opencode-directory` header is sent by the client.
+     */
+    fun workspaceDir(ctx: Context) = File(root(ctx), "workspace")
+
+    /**
      * Absolute path of the musl dynamic linker, as installed by Android's
      * package installer. Returns null on devices where the linker is not
      * present (e.g. non-arm64 or APK built without the bundled linker).

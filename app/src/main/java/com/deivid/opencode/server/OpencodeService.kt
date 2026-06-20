@@ -51,8 +51,9 @@ class OpencodeService : Service() {
                 val port = intent.getIntExtra(EXTRA_PORT, 4096)
                 val hostname = intent.getStringExtra(EXTRA_HOSTNAME) ?: "127.0.0.1"
                 val password = intent.getStringExtra(EXTRA_PASSWORD)
+                val workspace = intent.getStringExtra(EXTRA_WORKSPACE)
                 startInForeground(port, hostname)
-                launchServer(port, hostname, password)
+                launchServer(port, hostname, password, workspace)
             }
             ACTION_STOP -> {
                 stopServer()
@@ -75,14 +76,21 @@ class OpencodeService : Service() {
         )
     }
 
-    private fun launchServer(port: Int, hostname: String, password: String?) {
+    private fun launchServer(
+        port: Int,
+        hostname: String,
+        password: String?,
+        workspacePath: String? = null,
+    ) {
         val proc = OpencodeProcess(this).also { process = it }
         scope.launch {
             _events.emit(ServerEvent.Starting)
+            val workDir = workspacePath?.let { java.io.File(it) }
             val result = proc.start(
                 port = port,
                 hostname = hostname,
                 password = password,
+                workingDirectory = workDir,
                 onLog = { line -> scope.launch { _logs.emit(line) } },
             )
             result
@@ -178,18 +186,21 @@ class OpencodeService : Service() {
         const val EXTRA_PORT = "port"
         const val EXTRA_HOSTNAME = "hostname"
         const val EXTRA_PASSWORD = "password"
+        const val EXTRA_WORKSPACE = "workspace"
 
         fun start(
             ctx: Context,
             port: Int,
             hostname: String,
             password: String?,
+            workspace: String? = null,
         ) {
             val intent = Intent(ctx, OpencodeService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_PORT, port)
                 putExtra(EXTRA_HOSTNAME, hostname)
                 if (!password.isNullOrBlank()) putExtra(EXTRA_PASSWORD, password)
+                if (!workspace.isNullOrBlank()) putExtra(EXTRA_WORKSPACE, workspace)
             }
             ctx.startForegroundService(intent)
         }
