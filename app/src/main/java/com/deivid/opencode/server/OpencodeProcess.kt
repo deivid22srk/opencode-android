@@ -172,9 +172,10 @@ class OpencodeProcess(private val context: Context) {
             }
         }, "opencode-stdout").also { it.isDaemon = true }.start()
 
-        // Wait up to 30s for the listening line. The process keeps running
-        // after the latch counts down.
-        if (!urlLatch.await(30_000, TimeUnit.MILLISECONDS)) {
+        // Wait up to 60s for the listening line. The process keeps running
+        // after the latch counts down. Increased from 30s to 60s because the
+        // diagnostic shell script adds startup time.
+        if (!urlLatch.await(60_000, TimeUnit.MILLISECONDS)) {
             stop()
             error("opencode did not announce a listening URL within 30s")
         }
@@ -381,31 +382,49 @@ class OpencodeProcess(private val context: Context) {
 
         // Build the opencode command that runs inside the proot sandbox.
         //
-        // Now that opencode is a real file inside the rootfs AND its C++ deps
-        // (libstdc++.so.6, libgcc_s.so.1) are installed via apk into /usr/lib/
-        // (musl-built, ABI-correct), we can invoke opencode directly. Alpine's
-        // musl linker (/lib/ld-musl-aarch64.so.1) is the PT_INTERP and will
-        // resolve the DT_NEEDED entries from /usr/lib automatically.
-        val opencodeArgs = mutableListOf(
+        // We run a diagnostic shell script FIRST, then try to start opencode.
+        // The diagnostic output helps us understand what's failing inside
+        // the proot session (file existence, permissions, ELF validity, etc.).
+        //
+        // We do NOT use 'exec' for opencode — instead we run it directly and
+        // then print the exit code. This way the shell stays alive long enough
+        // to report the error, and we see ALL output.
+        val d = "${'$'}"  // literal dollar sign
+        val opencodeArgs = listOf(
             "serve",
             "--hostname", hostname,
             "--port", port.toString(),
-            // Enable verbose logging to help diagnose startup failures.
-            // --print-logs sends internal logs to stderr (which we capture).
-            "--print-logs",
-            "--log-level", "DEBUG",
         )
         val shellCmd = buildString {
+            // Diagnostic output — helps us see what's happening inside proot
+            append("echo '=== PROOT SESSION STARTED ==='\n")
+            append("echo 'whoami: '`${d}(whoami 2>&1 || echo 'FAIL')\n")
+            append("echo 'pwd: '`${d}(pwd 2>&1 || echo 'FAIL')\n")
+            append("echo 'PATH='`${d}PATH\n")
+            append("echo 'HOME='`${d}HOME\n")
+            append("echo '--- File checks ---'\n")
+            append("ls -la /usr/local/bin/opencode 2>&1 || echo 'FAIL: opencode not found'\n")
+            append("ls -la /usr/lib/libstdc++.so.6 2>&1 || echo 'FAIL: libstdc++ not found'\n")
+            append("ls -la /usr/lib/libgcc_s.so.1 2>&1 || echo 'FAIL: libgcc not found'\n")
+            append("ls -la /lib/ld-musl-aarch64.so.1 2>&1 || echo 'FAIL: musl linker not found'\n")
+            append("echo '--- ELF check ---'\n")
+            append("head -c 4 /usr/local/bin/opencode | od -A x -t x1z 2>&1 || echo 'FAIL: cant read opencode'\n")
+            append("echo '--- /proc check ---'\n")
+            append("ls /proc/self/exe 2>&1 || echo 'FAIL: /proc/self/exe not accessible'\n")
+            append("cat /proc/self/exe 2>/dev/null | head -c 4 | od -A x -t x1z 2>&1 || echo 'FAIL: cant read /proc/self/exe'\n")
+            append("echo '--- musl linker test ---'\n")
+            append("/lib/ld-musl-aarch64.so.1 --version 2>&1 || echo 'FAIL: musl linker cant run'\n")
+            append("echo '=== STARTING OPENCODE ==='\n")
+            // Set env vars
             if (!password.isNullOrBlank()) {
                 append("export OPENCODE_SERVER_PASSWORD=").append(escapeShell(password)).append("; ")
             }
             append("export OPENCODE_DISABLE_UPDATE=1 OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1; ")
-            // Launch opencode directly — Alpine's musl linker (which is the
-            // PT_INTERP) will be invoked by proot's loader trick, and it'll
-            // resolve libstdc++.so.6 + libgcc_s.so.1 from /usr/lib (installed
-            // via apk above).
-            append("exec /usr/local/bin/opencode ")
+            // Run opencode WITHOUT exec so we can capture the exit code
+            append("/usr/local/bin/opencode ")
                 .append(opencodeArgs.joinToString(" ") { escapeShell(it) })
+                .append(" 2>&1\n")
+            append("echo '=== OPENCODE EXITED WITH CODE '`${d}?' ==='\n")
         }
 
         val pb = proot.launch(
