@@ -58,29 +58,28 @@ class MainActivity : ComponentActivity() {
                     // observe the persisted setup state — null = DataStore still loading
                     val setupData by setupPreferences.data.collectAsState(initial = null)
 
-                    when (val data = setupData) {
-                        null -> LoadingScreen()
-                        data != null && !data.completed -> {
-                            val viewModel: SetupViewModel = viewModel()
-                            SetupScreen(
-                                viewModel = viewModel,
-                                onComplete = { /* state will flip and re-render */ },
-                            )
+                    val data = setupData
+                    if (data == null) {
+                        LoadingScreen()
+                    } else if (!data.completed) {
+                        val viewModel: SetupViewModel = viewModel()
+                        SetupScreen(
+                            viewModel = viewModel,
+                            onComplete = { /* state will flip and re-render */ },
+                        )
+                    } else {
+                        val viewModel: ServerViewModel = viewModel()
+                        // Bind to the foreground service once and keep it bound.
+                        // The server itself isn't started here — that happens
+                        // when the user taps "Start server".
+                        val ctx = this
+                        androidx.compose.runtime.LaunchedEffect(Unit) {
+                            viewModel.bind(ctx)
                         }
-                        else -> {
-                            val viewModel: ServerViewModel = viewModel()
-                            // Bind to the foreground service once and keep it bound.
-                            // The server itself isn't started here — that happens
-                            // when the user taps "Start server".
-                            val ctx = this
-                            androidx.compose.runtime.LaunchedEffect(Unit) {
-                                viewModel.bind(ctx)
-                            }
-                            HomeScreen(
-                                viewModel = viewModel,
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
-                            )
-                        }
+                        HomeScreen(
+                            viewModel = viewModel,
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                        )
                     }
                 }
             }
