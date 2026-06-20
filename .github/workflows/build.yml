@@ -33,14 +33,11 @@ jobs:
         run: |
           set -e
           echo "Checking jniLibs (all execve-able binaries):"
-          # All 5 .so files must be in jniLibs/arm64-v8a/ so the installer
-          # extracts them to apk_data_file (execve allowed):
-          #   - libopencode-musl.so   = musl dynamic linker
-          #   - libproot.so           = proot binary itself
-          #   - libproot-loader.so    = proot's loader for in-sandbox execve
-          #   - libtalloc.so.2        = proot dep (DT_NEEDED)
-          #   - libandroid-shmem.so   = proot dep (DT_NEEDED)
-          for f in libopencode-musl.so libproot.so libproot-loader.so libtalloc.so.2 libandroid-shmem.so; do
+          # All .so files must be in jniLibs/arm64-v8a/ so the installer
+          # extracts them to apk_data_file (execve allowed). AGP only packages
+          # files matching `*.so` (no version suffixes), so libtalloc is
+          # shipped as libtalloc.so and the .so.2 symlink is created at runtime.
+          for f in libopencode-musl.so libproot.so libproot-loader.so libtalloc.so libandroid-shmem.so; do
             path="app/src/main/jniLibs/arm64-v8a/$f"
             if [ ! -f "$path" ]; then
               echo "::error::Missing jniLib: $path"
@@ -94,7 +91,7 @@ jobs:
             exit 1
           fi
           echo "Inspecting $APK for all 5 .so files in lib/arm64-v8a/..."
-          for lib in libopencode-musl.so libproot.so libproot-loader.so libtalloc.so.2 libandroid-shmem.so; do
+          for lib in libopencode-musl.so libproot.so libproot-loader.so libtalloc.so libandroid-shmem.so; do
             if ! unzip -l "$APK" | grep -q "lib/arm64-v8a/$lib"; then
               echo "::error::$lib is missing from lib/arm64-v8a/ in the APK"
               unzip -l "$APK" | grep -E "lib/" || true

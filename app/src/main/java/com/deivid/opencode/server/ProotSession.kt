@@ -71,14 +71,41 @@ class ProotSession(private val context: Context) {
             )
         }
 
-        // 3. Alpine rootfs (only extract if not already done)
+        // 3. Create the libtalloc.so.2 symlink that proot's DT_NEEDED expects.
+        // AGP only packages files matching `*.so` in jniLibs (no version
+        // suffixes), so we shipped the actual libtalloc bytes as `libtalloc.so`.
+        // But proot's ELF has DT_NEEDED = libtalloc.so.2, so bionic's linker64
+        // looks for that exact filename at runtime. We create a symlink in a
+        // writable dir (filesDir/proot/lib) and add it to LD_LIBRARY_PATH.
+        val tallocActual = File(paths.prootLibDir, "libtalloc.so") // nativeLibDir/libtalloc.so
+        val tallocSymlinkDir = File(context.filesDir, "proot/lib")
+        tallocSymlinkDir.mkdirs()
+        val tallocSymlink = File(tallocSymlinkDir, "libtalloc.so.2")
+        if (!tallocSymlink.exists() && tallocActual.exists()) {
+            try {
+                tallocSymlink.delete()
+                java.nio.file.Files.createSymbolicLink(
+                    tallocSymlink.toPath(),
+                    tallocActual.toPath(),
+                )
+            } catch (e: Exception) {
+                // Fallback: copy the bytes (uses 2x space but works on
+                // filesystems that don't support symlinks).
+                tallocActual.inputStream().use { input ->
+                    java.io.FileOutputStream(tallocSymlink).use { output -> input.copyTo(output) }
+                }
+                tallocSymlink.setExecutable(true, true)
+            }
+        }
+
+        // 4. Alpine rootfs (only extract if not already done)
         if (!paths.alpineRootDir.isDirectory ||
             !File(paths.alpineRootDir, "etc/apk/repositories").exists()
         ) {
             extractAlpineRootfs(paths.alpineRootDir)
         }
 
-        // 4. Rootfs fixups (mirror what proot-distro does on install)
+        // 5. Rootfs fixups (mirror what proot-distro does on install)
         writeResolvConf(paths.alpineRootDir)
         ensureApkRepositories(paths.alpineRootDir)
         writePasswdEntry(paths.alpineRootDir)
@@ -151,10 +178,19 @@ class ProotSession(private val context: Context) {
             // Disable seccomp acceleration — Android often restricts seccomp
             // install for untrusted apps.
             environment()["PROOT_NO_SECCOMP"] = "1"
-            // proot's deps (libtalloc.so.2, libandroid-shmem.so) are in
-            // nativeLibDir alongside proot itself. Bionic's linker64 reads
-            // LD_LIBRARY_PATH at execve time.
-            environment()["LD_LIBRARY_PATH"] = nativeLibDir
+            // proot's deps (libandroid-shmem.so, libtalloc.so.2) are in
+            // nativeLibDir — but libtalloc needs a .so.2 symlink which we
+            // can't create in nativeLibDir (read-only). So we ship the actual
+            // bytes as libtalloc.so in nativeLibDir, and create a symlink
+            // libtalloc.so.2 → libtalloc.so in filesDir/proot/lib at runtime.
+            // LD_LIBRARY_PATH must include BOTH dirs so bionic's linker64 can:
+            //   - find libandroid-shmem.so (in nativeLibDir)
+            //   - resolve libtalloc.so.2 via the symlink (in filesDir/proot/lib)
+            val ldLibPath = listOfNotNull(
+                nativeLibDir,
+                File(context.filesDir, "proot/lib").takeIf { it.exists() }?.absolutePath,
+            ).joinToString(":")
+            environment()["LD_LIBRARY_PATH"] = ldLibPath
             // Clean environment inside the sandbox — let /etc/profile set PATH
             environment()["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
             environment()["HOME"] = "/root"
