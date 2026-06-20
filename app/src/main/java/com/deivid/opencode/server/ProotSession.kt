@@ -157,6 +157,13 @@ class ProotSession(private val context: Context) {
             // visible inside the sandbox. Mount it at the same path so any
             // hardcoded /data/data/<pkg>/... paths still resolve.
             "--bind=${context.filesDir.absolutePath}:${context.filesDir.absolutePath}",
+            // Bind nativeLibraryDir so the bundled musl linker
+            // (libopencode-musl.so) and proot loader (libproot-loader.so)
+            // are visible inside the sandbox. We need to invoke the musl
+            // linker explicitly to launch opencode (see OpencodeProcess),
+            // because Alpine's own /lib/ld-musl-aarch64.so.1 is in
+            // app_data_file and can't be execve()'d directly.
+            "--bind=$nativeLibDir:$nativeLibDir",
             // Bind /system so bionic-linked binaries (none in Alpine, but
             // defensive) and Android tools work.
             "--bind=/system",

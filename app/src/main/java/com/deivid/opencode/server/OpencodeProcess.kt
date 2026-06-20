@@ -291,28 +291,42 @@ class OpencodeProcess(private val context: Context) {
         //
         // We can't just `exec opencode` because opencode's DT_NEEDED entries
         // (libstdc++.so.6, libgcc_s.so.1) aren't in the Alpine base rootfs.
-        // Instead, we explicitly invoke Alpine's musl dynamic linker
-        // (/lib/ld-musl-aarch64.so.1) with --library-path pointing at our
-        // bundled C++ deps. This is the same trick we use in direct mode,
-        // just inside the proot sandbox.
+        // We use OUR bundled musl linker (the same one we use in direct mode,
+        // shipped as libopencode-musl.so in jniLibs) to launch opencode with
+        // --library-path pointing at our bundled C++ deps.
+        //
+        // Why not Alpine's own /lib/ld-musl-aarch64.so.1? Because that file
+        // lives in filesDir/alpine/lib/ (app_data_file), and although proot's
+        // loader trick can mmap(PROT_EXEC) it, the musl linker then needs to
+        // execve() the opencode binary — and THAT execve hits the same
+        // SELinux neverallow on app_data_file. proot should intercept that
+        // execve and rewrite it to its loader, but in practice the musl
+        // linker's internal exec of the target seems to bypass proot's
+        // ptrace interception in some edge cases.
+        //
+        // Our libopencode-musl.so is in nativeLibraryDir (apk_data_file),
+        // so execve() of IT works directly. We invoke it explicitly and let
+        // it mmap the opencode binary from filesDir (allowed because mmap
+        // only needs `execute`, not `execute_no_trans`).
         val opencodeArgs = mutableListOf(
             "serve",
             "--hostname", hostname,
             "--port", port.toString(),
         )
         val opencodeLibDir = Paths.libDir(context).absolutePath
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
+            ?: error("nativeLibraryDir is null")
+        val ourMuslLinker = "$nativeLibDir/libopencode-musl.so"
         val shellCmd = buildString {
             if (!password.isNullOrBlank()) {
                 append("export OPENCODE_SERVER_PASSWORD=").append(escapeShell(password)).append("; ")
             }
             append("export OPENCODE_DISABLE_UPDATE=1 OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1; ")
-            // Launch opencode via Alpine's musl dynamic linker with our
-            // bundled libstdc++.so.6 + libgcc_s.so.1 on the library path.
-            // The path filesDir/opencode/lib is bind-mounted inside the
-            // sandbox at the same path, so this resolves correctly.
-            append("exec /lib/ld-musl-aarch64.so.1 ")
-                .append("--library-path ").append(escapeShell(opencodeLibDir)).append(" ")
-                .append("/usr/local/bin/opencode ")
+            // Launch opencode via OUR bundled musl linker (apk_data_file,
+            // execve allowed) with --library-path pointing at our C++ deps.
+            append("exec ").append(escapeShell(ourMuslLinker))
+                .append(" --library-path ").append(escapeShell(opencodeLibDir))
+                .append(" /usr/local/bin/opencode ")
                 .append(opencodeArgs.joinToString(" ") { escapeShell(it) })
         }
 
