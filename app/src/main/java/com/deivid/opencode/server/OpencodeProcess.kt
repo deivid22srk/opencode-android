@@ -19,14 +19,15 @@ class OpencodeProcess(private val context: Context) {
     private val processRef = AtomicReference<Process?>(null)
     private val writerRef = AtomicReference<OutputStreamWriter?>(null)
 
-    /** Pid of the running process, or -1 if not running. */
+    /** Pid of the running process, or -1 if not running / unavailable. */
     val pid: Int
         get() = try {
-            // Process.pid() requires Java 9 / Android API 30+.
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                processRef.get()?.pid() ?: -1
-            } else -1
-        } catch (_: NoSuchMethodError) { -1 }
+            // java.lang.Process.pid() requires Java 9+ and Android API 30+.
+            // Use reflection so the call site compiles on every API level.
+            val p = processRef.get() ?: return -1
+            val m = p.javaClass.getMethod("pid")
+            (m.invoke(p) as? Int) ?: -1
+        } catch (_: Exception) { -1 }
 
     fun isRunning(): Boolean = processRef.get()?.isAlive == true
 
