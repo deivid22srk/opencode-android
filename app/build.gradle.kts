@@ -68,13 +68,14 @@ android {
         }
     }
 
-    // Keep AAPT from transparently decompressing our .tar.gz asset.
-    // By default AAPT sees `*.gz` and decompresses it during APK assembly,
-    // which silently strips the `.gz` suffix — our code then can't find
-    // `alpine-rootfs.tar.gz` via AssetManager. The noCompress list tells
-    // AAPT to leave these files alone.
+    // We ship the Alpine rootfs as `alpine-rootfs.bin` — the file is a
+    // gzip-compressed ustar tarball, but we deliberately use a `.bin`
+    // extension so AAPT2 doesn't try to "helpfully" decompress it during
+    // APK assembly (which strips the .gz suffix and confuses our code).
+    // The asset stays compressed inside the APK and we GZIPInputStream it
+    // at runtime.
     androidResources {
-        noCompress.addAll(listOf(".gz", ".tar.gz", "alpine-rootfs.tar.gz"))
+        noCompress.addAll(listOf(".bin", "alpine-rootfs.bin"))
     }
 }
 

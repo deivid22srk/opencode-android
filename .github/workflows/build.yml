@@ -63,7 +63,7 @@ jobs:
           done
           echo ""
           echo "Checking Alpine rootfs:"
-          path="app/src/main/assets/alpine-rootfs.tar.gz"
+          path="app/src/main/assets/alpine-rootfs.bin"
           if [ ! -f "$path" ]; then
             echo "::error::Missing Alpine rootfs: $path"
             exit 1
@@ -111,16 +111,15 @@ jobs:
             echo "OK  $lib present in lib/arm64-v8a/"
           done
 
-          # AAPT must NOT have decompressed alpine-rootfs.tar.gz → alpine-rootfs.tar
-          # (controlled by `aaptOptions { noCompress ".gz" }` in build.gradle.kts).
-          if unzip -l "$APK" | grep -q "assets/alpine-rootfs.tar.gz"; then
-            echo "OK  alpine-rootfs.tar.gz present (preserved by noCompress)"
-          elif unzip -l "$APK" | grep -q "assets/alpine-rootfs.tar"; then
-            echo "::warning::alpine-rootfs.tar.gz was decompressed to alpine-rootfs.tar by AAPT"
-            echo "The Kotlin code falls back to the .tar name, but this wastes ~5 MB of APK space."
-            echo "Check that build.gradle.kts has aaptOptions { noCompress '.gz' }."
+          # AAPT must NOT have renamed/decompressed the Alpine rootfs asset.
+          # We ship it as `alpine-rootfs.bin` (a .gz-renamed-to-.bin trick) to
+          # dodge AAPT2's transparent *.gz decompression.
+          if unzip -l "$APK" | grep -q "assets/alpine-rootfs.bin"; then
+            sz=$(unzip -l "$APK" | grep "assets/alpine-rootfs.bin" | awk '{print $1}')
+            echo "OK  alpine-rootfs.bin present in APK ($sz bytes)"
           else
-            echo "::error::Neither alpine-rootfs.tar.gz nor alpine-rootfs.tar is in the APK"
+            echo "::error::alpine-rootfs.bin is missing from the APK"
+            unzip -l "$APK" | grep -i "alpine" || true
             exit 1
           fi
           echo ""
