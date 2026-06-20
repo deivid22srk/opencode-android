@@ -4,13 +4,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -38,7 +36,6 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -52,7 +49,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
@@ -64,9 +60,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.deivid.opencode.terminal.TerminalViewModel
 import com.deivid.opencode.ui.theme.MonoTextStyle
 
-private val TerminalBg = Color(0xFF0B1F3A)
-private val TerminalFg = Color(0xFFE5E9F0)
-private val TerminalAccent = Color(0xFF7BD389)
+// ReTerminal-inspired color scheme
+private val TermBg = Color(0xFF000000)       // pure black background
+private val TermFg = Color(0xFF00FF00)       // terminal green
+private val TermFgDim = Color(0xFF00AA00)    // dimmer green for secondary text
+private val TermAccent = Color(0xFF00FF00)
+private val TermWhite = Color(0xFFE0E0E0)
+private val TermYellow = Color(0xFFFFFF00)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -77,7 +77,7 @@ fun TerminalScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = TermBg,
         topBar = {
             TopAppBar(
                 title = {
@@ -85,47 +85,62 @@ fun TerminalScreen(
                         Icon(
                             Icons.Default.Terminal,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
+                            tint = TermAccent,
                         )
                         Spacer(Modifier.width(12.dp))
                         Column {
                             Text(
                                 "Alpine Terminal",
                                 style = MaterialTheme.typography.titleLarge,
+                                color = TermWhite,
                             )
                             Text(
-                                if (state.alive) "Connected · proot Alpine"
-                                else if (state.starting) "Starting…"
-                                else "Disconnected",
+                                if (state.alive) "● Connected"
+                                else if (state.starting) "○ Starting…"
+                                else "○ Disconnected",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (state.alive)
-                                    TerminalAccent
-                                else
-                                    MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = if (state.alive) TermAccent else TermFgDim,
+                                fontFamily = FontFamily.Monospace,
                             )
                         }
                     }
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = TermWhite,
+                        )
                     }
                 },
                 actions = {
                     if (state.alive) {
                         IconButton(onClick = { viewModel.sendCtrlC() }) {
-                            Text("⌃C", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "^C",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = TermYellow,
+                            )
                         }
                         IconButton(onClick = { viewModel.stopSession() }) {
-                            Icon(Icons.Default.Stop, contentDescription = "Stop")
+                            Icon(
+                                Icons.Default.Stop,
+                                contentDescription = "Stop",
+                                tint = Color(0xFFFF5555),
+                            )
                         }
                     }
                     IconButton(onClick = { viewModel.clearOutput() }) {
-                        Icon(Icons.Default.Clear, contentDescription = "Clear")
+                        Icon(
+                            Icons.Default.Clear,
+                            contentDescription = "Clear",
+                            tint = TermWhite,
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                    containerColor = Color(0xFF1A1A1A),
                 ),
             )
         },
@@ -133,6 +148,7 @@ fun TerminalScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .background(TermBg)
                 .padding(padding)
                 .imePadding()
                 .navigationBarsPadding(),
@@ -184,12 +200,17 @@ private fun TerminalOutput(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .padding(8.dp),
+            .padding(4.dp),
     ) {
+        // Terminal card — pure black with green text, ReTerminal style
         Card(
             modifier = Modifier.fillMaxSize(),
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = TerminalBg),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = TermBg),
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                Color(0xFF333333),
+            ),
         ) {
             Box(modifier = Modifier
                 .fillMaxSize()
@@ -202,39 +223,60 @@ private fun TerminalOutput(
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Icon(
-                            Icons.Default.Terminal,
-                            contentDescription = null,
-                            tint = TerminalAccent.copy(alpha = 0.6f),
-                            modifier = Modifier.size(56.dp),
-                        )
-                        Spacer(Modifier.height(16.dp))
                         Text(
-                            "Alpine Linux Terminal",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = TerminalFg,
+                            "┌─────────────────────────────────┐",
+                            color = TermFg,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 14.sp,
+                        )
+                        Text(
+                            "│     Alpine Linux Terminal       │",
+                            color = TermFg,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 14.sp,
+                        )
+                        Text(
+                            "│       (proot container)          │",
+                            color = TermFgDim,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 14.sp,
+                        )
+                        Text(
+                            "└─────────────────────────────────┘",
+                            color = TermFg,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 14.sp,
+                        )
+                        Spacer(Modifier.height(24.dp))
+                        Text(
+                            "Tap Connect to launch an interactive shell",
+                            color = TermFgDim,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
                         )
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "Tap Connect to launch an interactive shell inside the\n" +
-                                "proot'd Alpine rootfs. You'll be able to run real\n" +
-                                "Linux commands like ls, apk add python3, etc.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = TerminalFg.copy(alpha = 0.7f),
-                            modifier = Modifier.alpha(0.85f),
+                            "Available: ls, cd, apk update, apk add python3, ...",
+                            color = TermFgDim,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
                         )
-                        Spacer(Modifier.height(24.dp))
+                        Spacer(Modifier.height(32.dp))
                         Button(
                             onClick = onStart,
-                            shape = RoundedCornerShape(20.dp),
+                            shape = RoundedCornerShape(8.dp),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = TerminalAccent,
-                                contentColor = Color(0xFF003919),
+                                containerColor = TermAccent,
+                                contentColor = Color.Black,
                             ),
                         ) {
                             Icon(Icons.Default.PlayArrow, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
-                            Text("Connect")
+                            Text(
+                                "Connect",
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                            )
                         }
                     }
                 } else if (starting) {
@@ -244,20 +286,22 @@ private fun TerminalOutput(
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
                         CircularProgressIndicator(
-                            color = TerminalAccent,
+                            color = TermAccent,
                             modifier = Modifier.size(36.dp),
-                            strokeWidth = 3.dp,
+                            strokeWidth = 2.dp,
                         )
                         Spacer(Modifier.height(16.dp))
                         Text(
                             "Starting proot + Alpine…",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = TerminalFg,
+                            color = TermFg,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 13.sp,
                         )
                         Text(
-                            "First launch may take 10-15s to extract the rootfs.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TerminalFg.copy(alpha = 0.7f),
+                            "First launch may take 10-15s",
+                            color = TermFgDim,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
                         )
                     }
                 } else {
@@ -269,11 +313,10 @@ private fun TerminalOutput(
                             items(lines) { line ->
                                 Text(
                                     text = line,
-                                    style = MonoTextStyle.copy(
-                                        color = TerminalFg,
-                                        fontSize = 13.sp,
-                                        lineHeight = 18.sp,
-                                    ),
+                                    color = TermFg,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 13.sp,
+                                    lineHeight = 17.sp,
                                 )
                             }
                         }
@@ -281,7 +324,9 @@ private fun TerminalOutput(
                     if (error != null) {
                         Text(
                             "\n[error: $error]",
-                            style = MonoTextStyle.copy(color = MaterialTheme.colorScheme.error),
+                            style = MonoTextStyle.copy(color = Color(0xFFFF5555)),
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
                         )
                     }
                 }
@@ -299,20 +344,45 @@ private fun TerminalInputBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .background(Color(0xFF1A1A1A))
             .padding(8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        // Prompt symbol
+        Text(
+            "$ ",
+            color = TermAccent,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 14.sp,
+            modifier = Modifier.padding(start = 4.dp),
+        )
         OutlinedTextField(
             value = input,
             onValueChange = { input = it },
             modifier = Modifier.weight(1f),
-            placeholder = { Text("Type a command…") },
+            placeholder = {
+                Text(
+                    "type a command…",
+                    color = TermFgDim,
+                    fontFamily = FontFamily.Monospace,
+                )
+            },
             singleLine = true,
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(8.dp),
+            textStyle = androidx.compose.ui.text.TextStyle(
+                color = TermFg,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 13.sp,
+            ),
             keyboardOptions = KeyboardOptions(
                 keyboardType = KeyboardType.Ascii,
                 imeAction = ImeAction.Send,
+            ),
+            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = TermAccent,
+                unfocusedBorderColor = Color(0xFF333333),
+                cursorColor = TermAccent,
             ),
             trailingIcon = {
                 if (input.isNotEmpty()) {
@@ -323,7 +393,7 @@ private fun TerminalInputBar(
                         Icon(
                             Icons.Default.PlayArrow,
                             contentDescription = "Send",
-                            tint = MaterialTheme.colorScheme.primary,
+                            tint = TermAccent,
                         )
                     }
                 }
@@ -335,9 +405,16 @@ private fun TerminalInputBar(
                 input = ""
             },
             enabled = input.isNotEmpty(),
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(8.dp),
+            colors = ButtonDefaults.filledTonalButtonColors(
+                containerColor = Color(0xFF1A3A1A),
+                contentColor = TermAccent,
+            ),
         ) {
-            Text("Run")
+            Text(
+                "Run",
+                fontFamily = FontFamily.Monospace,
+            )
         }
     }
 }
