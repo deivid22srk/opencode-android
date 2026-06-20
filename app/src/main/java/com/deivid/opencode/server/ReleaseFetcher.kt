@@ -88,9 +88,10 @@ class ReleaseFetcher {
         runCatching {
             var redirectCount = 0
             var currentUrl = downloadUrl
+            var completed = false
 
             // GitHub release downloads redirect through several CDN URLs
-            while (redirectCount < 10) {
+            while (redirectCount < 10 && !completed) {
                 val conn = URL(currentUrl).openConnection() as HttpURLConnection
                 conn.connectTimeout = 15_000
                 conn.readTimeout = 60_000
@@ -103,7 +104,6 @@ class ReleaseFetcher {
                         conn.disconnect()
                         currentUrl = loc
                         redirectCount++
-                        continue
                     }
                     200 -> {
                         val totalBytes = conn.contentLength.toLong()
@@ -121,7 +121,7 @@ class ReleaseFetcher {
                         }
                         input.close()
                         conn.disconnect()
-                        return@withContext
+                        completed = true
                     }
                     else -> {
                         val err = conn.errorStream?.bufferedReader()?.readText()
@@ -131,7 +131,7 @@ class ReleaseFetcher {
                     }
                 }
             }
-            error("Too many redirects")
+            if (!completed) error("Too many redirects")
         }
     }
 

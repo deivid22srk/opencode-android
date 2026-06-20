@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -66,8 +67,8 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
 
         // Restore saved workspace if any
         viewModelScope.launch {
-            val uri = setupPrefs.workspaceUri.first()
-            val name = setupPrefs.workspaceDisplayName.first()
+            val uri = setupPrefs.workspaceUri.first() as? String
+            val name = setupPrefs.workspaceDisplayName.first() as? String
             if (uri != null && name != null) {
                 val path = resolveTreeUriPath(uri)
                 _state.value = _state.value.copy(
