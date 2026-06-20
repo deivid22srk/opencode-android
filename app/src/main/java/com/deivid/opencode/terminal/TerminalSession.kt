@@ -96,6 +96,9 @@ class TerminalSession(private val context: Context) {
                 process = null
                 stdin = null
             }
+        }.let { result ->
+            // runCatching returns Result<Process?>; we want Result<Unit>.
+            result.map { }
         }
     }
 
