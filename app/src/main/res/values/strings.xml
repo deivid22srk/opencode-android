@@ -52,6 +52,27 @@
     <string name="action_close">Close</string>
     <string name="copied">Copied to clipboard</string>
 
+    <!-- Setup -->
+    <string name="setup_title">Setup OpenCode</string>
+    <string name="setup_step1_title">Step 1: Choose Opencode Release</string>
+    <string name="setup_step1_desc">Download a compatible version or import manually.</string>
+    <string name="setup_step2_title">Step 2: Choose Projects Folder</string>
+    <string name="setup_step2_desc">Select the folder where opencode will access your projects.</string>
+    <string name="setup_download">Download</string>
+    <string name="setup_downloading">Downloading…</string>
+    <string name="setup_import_manual">Import release file</string>
+    <string name="setup_importing">Importing…</string>
+    <string name="setup_skip">Skip</string>
+    <string name="setup_back">Back</string>
+    <string name="setup_next">Next</string>
+    <string name="setup_complete">Complete Setup</string>
+    <string name="setup_loading_releases">Loading releases…</string>
+    <string name="setup_retry">Retry</string>
+    <string name="setup_select_folder">Select Folder</string>
+    <string name="setup_import_success">Imported opencode %1$s</string>
+    <string name="setup_download_failed">Download failed: %1$s</string>
+    <string name="setup_import_failed">Import failed: %1$s</string>
+
     <!-- Errors -->
     <string name="err_no_binary">No opencode binary imported yet.</string>
     <string name="err_extract_runtime">Could not extract the musl runtime. Try reinstalling the app.</string>

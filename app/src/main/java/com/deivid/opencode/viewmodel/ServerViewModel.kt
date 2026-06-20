@@ -15,6 +15,7 @@ import com.deivid.opencode.server.BinaryManager
 import com.deivid.opencode.server.OpencodeService
 import com.deivid.opencode.server.Paths
 import com.deivid.opencode.server.ServerEvent
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -114,7 +115,7 @@ class ServerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun importRelease(uri: Uri) {
         _state.value = _state.value.copy(importBusy = true, importMessage = null)
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val result = binaryManager.importFromUri(uri)
             result
                 .onSuccess { info ->

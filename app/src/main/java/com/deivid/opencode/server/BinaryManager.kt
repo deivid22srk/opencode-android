@@ -281,6 +281,15 @@ class BinaryManager(private val context: Context) {
         }
     }
 
+    /**
+     * Imports from a file that was already downloaded/copied to local storage.
+     * Used by the setup screen's download flow to avoid re-copying the file.
+     */
+    fun importFromFile(file: File): Result<BinaryInfo> = runCatching {
+        ensureRuntime().getOrThrow()
+        extractAndInstall(file)
+    }
+
     fun currentBinary(): BinaryInfo? {
         val b = Paths.binary(context)
         if (!b.exists() || !b.canExecute()) return null
