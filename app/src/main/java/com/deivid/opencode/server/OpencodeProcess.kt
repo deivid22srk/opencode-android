@@ -282,16 +282,28 @@ class OpencodeProcess(private val context: Context) {
         // then opens the guest path, it can end up opening the empty
         // placeholder instead of the real bound file → "Not a valid dynamic
         // program". Copying the binary into the rootfs avoids this entirely.
+        //
+        // We ALWAYS overwrite — a previous proot run with file-bind may have
+        // left a 0-byte placeholder at this path, and we need to replace it
+        // with the real binary.
         val opencodeInRootfs = File(proot.rootfsDir(), "usr/local/bin/opencode")
         opencodeInRootfs.parentFile?.mkdirs()
-        if (!opencodeInRootfs.exists() ||
-            opencodeInRootfs.length() != binary.length() ||
-            opencodeInRootfs.lastModified() < binary.lastModified()
-        ) {
-            binary.inputStream().use { input ->
-                java.io.FileOutputStream(opencodeInRootfs).use { output -> input.copyTo(output) }
-            }
-            opencodeInRootfs.setExecutable(true, true)
+        if (opencodeInRootfs.exists()) {
+            opencodeInRootfs.delete()
+        }
+        binary.inputStream().use { input ->
+            java.io.FileOutputStream(opencodeInRootfs).use { output -> input.copyTo(output) }
+        }
+        if (!opencodeInRootfs.setExecutable(true, true)) {
+            error("Failed to chmod opencode binary in rootfs")
+        }
+        // Sanity check: verify the copy succeeded and the file is non-empty.
+        if (opencodeInRootfs.length() < 1_000_000) {
+            error(
+                "opencode binary copy to rootfs failed — file is only " +
+                    "${opencodeInRootfs.length()} bytes (expected ~160 MB). " +
+                    "Original: ${binary.length()} bytes."
+            )
         }
 
         // Also copy our bundled C++ deps (libstdc++.so.6, libgcc_s.so.1)
@@ -303,7 +315,8 @@ class OpencodeProcess(private val context: Context) {
         for (libName in listOf("libstdc++.so.6", "libgcc_s.so.1")) {
             val src = File(libDir, libName)
             val dst = File(opencodeLibInRootfs, libName)
-            if (src.exists() && (!dst.exists() || dst.length() != src.length())) {
+            if (dst.exists()) dst.delete()
+            if (src.exists()) {
                 src.inputStream().use { input ->
                     java.io.FileOutputStream(dst).use { output -> input.copyTo(output) }
                 }

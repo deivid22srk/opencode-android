@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Sensors
 import androidx.compose.material3.AssistChip
@@ -107,6 +108,7 @@ import kotlinx.coroutines.launch
 fun HomeScreen(
     viewModel: ServerViewModel,
     contentPadding: PaddingValues,
+    onOpenTerminal: () -> Unit = {},
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -171,6 +173,10 @@ fun HomeScreen(
                     }
                 },
                 actions = {
+                    // Terminal icon — opens an interactive Alpine shell.
+                    IconButton(onClick = onOpenTerminal) {
+                        Icon(Icons.Default.Terminal, contentDescription = "Alpine terminal")
+                    }
                     androidx.compose.material3.DropdownMenu(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false },

@@ -16,6 +16,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -24,9 +28,16 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.deivid.opencode.data.SetupPreferences
 import com.deivid.opencode.ui.screens.HomeScreen
 import com.deivid.opencode.ui.screens.SetupScreen
+import com.deivid.opencode.ui.screens.TerminalScreen
 import com.deivid.opencode.ui.theme.OpenCodeTheme
 import com.deivid.opencode.viewmodel.ServerViewModel
 import com.deivid.opencode.viewmodel.SetupViewModel
+
+/**
+ * Top-level navigation state. We use a simple enum instead of NavHost
+ * because we only have 3 screens and don't need deep-linking.
+ */
+private enum class Screen { Home, Terminal }
 
 class MainActivity : ComponentActivity() {
 
@@ -58,6 +69,9 @@ class MainActivity : ComponentActivity() {
                     // observe the persisted setup state — null = DataStore still loading
                     val setupData by setupPreferences.data.collectAsState(initial = null)
 
+                    // Top-level navigation state — survives configuration changes.
+                    var screen by rememberSaveable { mutableStateOf(Screen.Home) }
+
                     val data = setupData
                     if (data == null) {
                         LoadingScreen()
@@ -68,18 +82,28 @@ class MainActivity : ComponentActivity() {
                             onComplete = { /* state will flip and re-render */ },
                         )
                     } else {
-                        val viewModel: ServerViewModel = viewModel()
-                        // Bind to the foreground service once and keep it bound.
-                        // The server itself isn't started here — that happens
-                        // when the user taps "Start server".
-                        val ctx = this
-                        androidx.compose.runtime.LaunchedEffect(Unit) {
-                            viewModel.bind(ctx)
+                        when (screen) {
+                            Screen.Home -> {
+                                val viewModel: ServerViewModel = viewModel()
+                                // Bind to the foreground service once and keep it bound.
+                                // The server itself isn't started here — that happens
+                                // when the user taps "Start server".
+                                val ctx = this
+                                androidx.compose.runtime.LaunchedEffect(Unit) {
+                                    viewModel.bind(ctx)
+                                }
+                                HomeScreen(
+                                    viewModel = viewModel,
+                                    contentPadding = PaddingValues(0.dp),
+                                    onOpenTerminal = { screen = Screen.Terminal },
+                                )
+                            }
+                            Screen.Terminal -> {
+                                TerminalScreen(
+                                    onBack = { screen = Screen.Home },
+                                )
+                            }
                         }
-                        HomeScreen(
-                            viewModel = viewModel,
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
-                        )
                     }
                 }
             }
