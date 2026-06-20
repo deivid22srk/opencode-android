@@ -156,15 +156,6 @@ class ProotSession(private val context: Context) {
             "--bind=/dev/urandom:/dev/random",
             "--bind=/proc",
             "--bind=/sys",
-            // /dev/fd, /dev/stdin, /dev/stdout, /dev/stderr — needed for
-            // shell redirection, process substitution, and many tools that
-            // expect these to exist (e.g. `<(cmd)`, `>&2`, etc.)
-            "--bind=/proc/self/fd:/dev/fd",
-            "--bind=/proc/self/fd/0:/dev/stdin",
-            "--bind=/proc/self/fd/1:/dev/stdout",
-            "--bind=/proc/self/fd/2:/dev/stderr",
-            // /dev/shm — needed by some musl/glibc shared-memory users
-            "--bind=${paths.alpineRootDir.absolutePath}/tmp:/dev/shm",
             // Bind the app's own data dir so opencode (which lives there) is
             // visible inside the sandbox. Mount it at the same path so any
             // hardcoded /data/data/<pkg>/... paths still resolve.
@@ -179,6 +170,32 @@ class ProotSession(private val context: Context) {
             "--bind=/apex",
             "--bind=/vendor",
         )
+
+        // Conditional binds — only add if the source path exists. proot
+        // prints a warning and refuses to start if a --bind source doesn't
+        // exist ("can't sanitize binding ... No such file or directory").
+        // This matches ReTerminal's init-host.sh pattern.
+        //
+        // NOTE: We deliberately do NOT bind /proc/self/fd → /dev/fd or
+        // /proc/self/fd/{0,1,2} → /dev/std{in,out,err} here. Even when the
+        // source paths exist, proot's bind mechanism calls chmod() on the
+        // target during sanitization, which triggers SELinux 'setattr'
+        // denials on /proc (labeled 'proc:s0') and /proc/self/fd (labeled
+        // 'untrusted_app:s0'). These denials cause apk to fail with
+        // "failed to write database: Function not implemented" because apk
+        // walks /proc and aborts on the chmod errors.
+        //
+        // The Alpine rootfs already has /dev/fd, /dev/stdin, /dev/stdout,
+        // /dev/stderr as symlinks to /proc/self/fd/N (set up by the
+        // alpine-minirootfs), so these binds aren't strictly necessary
+        // for most tools.
+
+        // /dev/shm — needed by some musl/glibc shared-memory users. The
+        // tmp dir inside the rootfs must exist.
+        val shmDir = java.io.File(paths.alpineRootDir, "tmp")
+        if (shmDir.isDirectory) {
+            cmd.add("--bind=${shmDir.absolutePath}:/dev/shm")
+        }
         cmd.addAll(extraBinds)
         cmd.add("--cwd=$cwd")
         cmd.addAll(argv)
@@ -205,6 +222,9 @@ class ProotSession(private val context: Context) {
             // program"). We copy files into the rootfs directly instead of
             // relying on file binds for binaries.
             environment()["PROOT_DONT_POLLUTE_ROOTFS"] = "1"
+            // Don't fail proot startup if a --bind source doesn't exist or
+            // can't be sanitized. proot prints a warning and continues.
+            environment()["PROOT_IGNORE_MISSING_BINDINGS"] = "1"
             // proot's deps (libandroid-shmem.so, libtalloc.so.2) are in
             // nativeLibDir — but libtalloc needs a .so.2 symlink which we
             // can't create in nativeLibDir (read-only). So we ship the actual

@@ -324,19 +324,57 @@ class OpencodeProcess(private val context: Context) {
         val opencodeLibInRootfs = File(proot.rootfsDir(), "usr/local/lib/opencode")
         opencodeLibInRootfs.mkdirs()
         // Run apk add for the C++ runtime deps + gcompat.
+        // --no-cache: don't use local cache (avoid cache DB write issues)
+        // --no-scripts: skip post-install scripts (they may try chmod/chown
+        //   on paths that proot/SELinux rejects)
         // This is idempotent — apk skips already-installed packages.
-        try {
-            val apkResult = proot.runCommand(
-                listOf("apk", "--no-cache", "add", "libstdc++", "libgcc", "gcompat"),
-                timeoutMs = 60_000,
-            )
-            apkResult.onFailure { e ->
+        //
+        // First, check if the libs are already installed (by checking the
+        // actual files). If they are, skip the apk add entirely — this
+        // avoids re-running apk on every server start and avoids the
+        // "failed to write database" error if a previous run left the
+        // apk database inconsistent.
+        val libStdcxx = File(proot.rootfsDir(), "usr/lib/libstdc++.so.6")
+        val libGcc = File(proot.rootfsDir(), "usr/lib/libgcc_s.so.1")
+        if (libStdcxx.exists() && libGcc.exists()) {
+            android.util.Log.i("OpencodeProcess",
+                "libstdc++ and libgcc already installed, skipping apk add")
+        } else {
+            // Clean up any inconsistent apk database from a previous failed run.
+            // The 'installed' database is at /lib/apk/db/installed. If apk
+            // reports "System state may be inconsistent", deleting this file
+            // forces apk to rebuild it on the next run.
+            val apkDb = File(proot.rootfsDir(), "lib/apk/db/installed")
+            // Don't delete the whole file — just run apk fix afterwards if needed.
+
+            try {
+                val apkResult = proot.runCommand(
+                    listOf(
+                        "apk", "--no-cache", "--no-scripts",
+                        "add", "libstdc++", "libgcc", "gcompat",
+                    ),
+                    timeoutMs = 60_000,
+                )
+                apkResult.onFailure { e ->
+                    android.util.Log.w("OpencodeProcess",
+                        "apk add libstdc++ libgcc gcompat failed: ${e.message}")
+                    // If apk failed, the database might be inconsistent.
+                    // Try running 'apk fix' to repair it.
+                    if (e.message?.contains("inconsistent") == true ||
+                        e.message?.contains("Function not implemented") == true
+                    ) {
+                        android.util.Log.i("OpencodeProcess",
+                            "Attempting apk fix to repair database…")
+                        proot.runCommand(
+                            listOf("apk", "--no-cache", "fix"),
+                            timeoutMs = 30_000,
+                        )
+                    }
+                }
+            } catch (e: Exception) {
                 android.util.Log.w("OpencodeProcess",
-                    "apk add libstdc++ libgcc gcompat failed: ${e.message}")
+                    "apk add threw exception: ${e.message}")
             }
-        } catch (e: Exception) {
-            android.util.Log.w("OpencodeProcess",
-                "apk add threw exception: ${e.message}")
         }
 
         // Mount the user's working directory as /root inside the sandbox so
@@ -357,6 +395,10 @@ class OpencodeProcess(private val context: Context) {
             "serve",
             "--hostname", hostname,
             "--port", port.toString(),
+            // Enable verbose logging to help diagnose startup failures.
+            // --print-logs sends internal logs to stderr (which we capture).
+            "--print-logs",
+            "--log-level", "DEBUG",
         )
         val shellCmd = buildString {
             if (!password.isNullOrBlank()) {
