@@ -275,10 +275,41 @@ class OpencodeProcess(private val context: Context) {
         val proot = ProotSession(context)
         proot.ensureInstalled().getOrThrow()
 
-        // Mount the opencode binary inside the rootfs at a stable path so we
-        // can invoke it as `/usr/local/bin/opencode` from inside the proot
-        // session. Use --bind instead of copying.
-        val opencodeBind = "--bind=${binary.absolutePath}:/usr/local/bin/opencode"
+        // CRITICAL: copy the opencode binary INTO the Alpine rootfs instead
+        // of bind-mounting it. proot's file-bind mechanism has a known issue
+        // where it creates a 0-byte mknod() placeholder at the guest path
+        // inside the rootfs (path/glue.c::build_glue). When the musl linker
+        // then opens the guest path, it can end up opening the empty
+        // placeholder instead of the real bound file → "Not a valid dynamic
+        // program". Copying the binary into the rootfs avoids this entirely.
+        val opencodeInRootfs = File(proot.rootfsDir(), "usr/local/bin/opencode")
+        opencodeInRootfs.parentFile?.mkdirs()
+        if (!opencodeInRootfs.exists() ||
+            opencodeInRootfs.length() != binary.length() ||
+            opencodeInRootfs.lastModified() < binary.lastModified()
+        ) {
+            binary.inputStream().use { input ->
+                java.io.FileOutputStream(opencodeInRootfs).use { output -> input.copyTo(output) }
+            }
+            opencodeInRootfs.setExecutable(true, true)
+        }
+
+        // Also copy our bundled C++ deps (libstdc++.so.6, libgcc_s.so.1)
+        // into the rootfs so opencode's DT_NEEDED entries resolve via
+        // Alpine's own musl linker.
+        val opencodeLibInRootfs = File(proot.rootfsDir(), "usr/local/lib/opencode")
+        opencodeLibInRootfs.mkdirs()
+        val libDir = Paths.libDir(context)
+        for (libName in listOf("libstdc++.so.6", "libgcc_s.so.1")) {
+            val src = File(libDir, libName)
+            val dst = File(opencodeLibInRootfs, libName)
+            if (src.exists() && (!dst.exists() || dst.length() != src.length())) {
+                src.inputStream().use { input ->
+                    java.io.FileOutputStream(dst).use { output -> input.copyTo(output) }
+                }
+                dst.setExecutable(true, true)
+            }
+        }
 
         // Mount the user's working directory as /root inside the sandbox so
         // opencode's `process.cwd()` resolves to a real, writable folder
@@ -289,57 +320,35 @@ class OpencodeProcess(private val context: Context) {
 
         // Build the opencode command that runs inside the proot sandbox.
         //
-        // We can't just `exec opencode` because opencode's DT_NEEDED entries
-        // (libstdc++.so.6, libgcc_s.so.1) aren't in the Alpine base rootfs.
-        // We use OUR bundled musl linker (the same one we use in direct mode,
-        // shipped as libopencode-musl.so in jniLibs) to launch opencode with
-        // --library-path pointing at our bundled C++ deps.
-        //
-        // Why not Alpine's own /lib/ld-musl-aarch64.so.1? Because that file
-        // lives in filesDir/alpine/lib/ (app_data_file), and although proot's
-        // loader trick can mmap(PROT_EXEC) it, the musl linker then needs to
-        // execve() the opencode binary — and THAT execve hits the same
-        // SELinux neverallow on app_data_file. proot should intercept that
-        // execve and rewrite it to its loader, but in practice the musl
-        // linker's internal exec of the target seems to bypass proot's
-        // ptrace interception in some edge cases.
-        //
-        // Our libopencode-musl.so is in nativeLibraryDir (apk_data_file),
-        // so execve() of IT works directly. We invoke it explicitly and let
-        // it mmap the opencode binary from filesDir (allowed because mmap
-        // only needs `execute`, not `execute_no_trans`).
+        // Now that opencode is a real file inside the rootfs (at
+        // /usr/local/bin/opencode) AND its C++ deps are at
+        // /usr/local/lib/opencode/, we can invoke it directly via Alpine's
+        // own musl linker (/lib/ld-musl-aarch64.so.1) — which IS in the
+        // rootfs and works because proot's loader trick handles its execve.
         val opencodeArgs = mutableListOf(
             "serve",
             "--hostname", hostname,
             "--port", port.toString(),
         )
-        val opencodeLibDir = Paths.libDir(context).absolutePath
-        val nativeLibDir = context.applicationInfo.nativeLibraryDir
-            ?: error("nativeLibraryDir is null")
-        val ourMuslLinker = "$nativeLibDir/libopencode-musl.so"
+        val opencodeLibPath = "/usr/local/lib/opencode"
         val shellCmd = buildString {
             if (!password.isNullOrBlank()) {
                 append("export OPENCODE_SERVER_PASSWORD=").append(escapeShell(password)).append("; ")
             }
             append("export OPENCODE_DISABLE_UPDATE=1 OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1; ")
-            // Launch opencode via OUR bundled musl linker (apk_data_file,
-            // execve allowed) with --library-path pointing at our C++ deps.
-            append("exec ").append(escapeShell(ourMuslLinker))
-                .append(" --library-path ").append(escapeShell(opencodeLibDir))
-                .append(" /usr/local/bin/opencode ")
+            // Launch opencode via Alpine's musl linker with our copied C++
+            // deps on the library path.
+            append("exec /lib/ld-musl-aarch64.so.1 ")
+                .append("--library-path ").append(escapeShell(opencodeLibPath)).append(" ")
+                .append("/usr/local/bin/opencode ")
                 .append(opencodeArgs.joinToString(" ") { escapeShell(it) })
         }
 
         val pb = proot.launch(
             argv = listOf("/bin/sh", "-lc", shellCmd),
             cwd = "/root",
-            extraBinds = listOf(opencodeBind, workspaceBind),
+            extraBinds = listOf(workspaceBind),
         )
-
-        // Note: ProotSession.launch() already sets LD_LIBRARY_PATH to include
-        // nativeLibDir, filesDir/proot/lib (libtalloc symlink), and
-        // filesDir/opencode/lib (libstdc++ + libgcc_s for opencode's C++ deps).
-        // No additional env setup needed here.
 
         // Pass workspace dir so ProcessBuilder.directory() doesn't matter
         // (proot ignores it anyway — it sets cwd via --cwd flag).

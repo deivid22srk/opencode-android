@@ -113,6 +113,9 @@ class ProotSession(private val context: Context) {
         paths
     }
 
+    /** Public accessor for the Alpine rootfs directory. */
+    fun rootfsDir(): File = ProotPaths(context).alpineRootDir
+
     /**
      * Builds the ProcessBuilder command list that launches [argv] inside the
      * proot'd Alpine environment. The caller is responsible for setting any
@@ -185,6 +188,13 @@ class ProotSession(private val context: Context) {
             // Disable seccomp acceleration — Android often restricts seccomp
             // install for untrusted apps.
             environment()["PROOT_NO_SECCOMP"] = "1"
+            // Don't let proot create 0-byte mknod() placeholders inside the
+            // Alpine rootfs for file binds whose guest target doesn't exist.
+            // These placeholders confuse the musl linker (it opens the empty
+            // file instead of the real bound source → "Not a valid dynamic
+            // program"). We copy files into the rootfs directly instead of
+            // relying on file binds for binaries.
+            environment()["PROOT_DONT_POLLUTE_ROOTFS"] = "1"
             // proot's deps (libandroid-shmem.so, libtalloc.so.2) are in
             // nativeLibDir — but libtalloc needs a .so.2 symlink which we
             // can't create in nativeLibDir (read-only). So we ship the actual
