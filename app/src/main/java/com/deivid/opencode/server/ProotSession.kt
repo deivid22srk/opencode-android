@@ -151,14 +151,16 @@ class ProotSession(private val context: Context) {
             "--kill-on-exit",          // reap children when proot exits
             "--sysvipc",               // termux fork: SysV IPC emulation
             "--kernel-release=6.1.0-PRoot-Android", // satisfy musl/glibc min-kernel checks
-            // Bind standard virtual filesystems so /dev, /sys work.
-            // We deliberately do NOT bind /proc directly because proot's bind
-            // sanitization calls chmod() on /proc, which triggers SELinux
-            // 'setattr' denials on proc:s0. The Alpine rootfs already has
-            // /proc as an empty dir; proot's path translation handles /proc
-            // access without needing a real bind.
+            // Bind standard virtual filesystems so /dev, /proc, /sys work.
+            // /proc is needed by opencode (reads /proc/overcommit_memory,
+            // /proc/self/exe, etc.) and by many Linux tools. The SELinux
+            // 'setattr' denials on /proc during bind sanitization only
+            // affect apk (which writes to its database via /proc walks) —
+            // but we install apk packages in a separate proot invocation
+            // and skip it when libs are already installed, so this is fine.
             "--bind=/dev",
             "--bind=/dev/urandom:/dev/random",
+            "--bind=/proc",
             "--bind=/sys",
             // Bind the app's own data dir so opencode (which lives there) is
             // visible inside the sandbox. Mount it at the same path so any

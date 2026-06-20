@@ -159,8 +159,8 @@ class OpencodeProcess(private val context: Context) {
                     val lines = sb.toString().lineSequence()
                         .filter { it.isNotBlank() }
                         .toList()
-                    val tail = if (lines.size > 8) {
-                        lines.takeLast(8).joinToString("\n")
+                    val tail = if (lines.size > 50) {
+                        lines.takeLast(50).joinToString("\n")
                     } else {
                         lines.joinToString("\n")
                     }
