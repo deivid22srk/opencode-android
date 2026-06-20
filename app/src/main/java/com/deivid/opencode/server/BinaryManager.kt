@@ -58,6 +58,21 @@ object Paths {
     fun workspaceDir(ctx: Context) = File(root(ctx), "workspace")
 
     /**
+     * Bundle of all Android system CA certificates, concatenated into a
+     * single PEM file. opencode (Bun) looks for CA certs at
+     * /etc/ssl/certs/ca-certificates.crt etc., which don't exist on Android.
+     * We point SSL_CERT_FILE and NODE_EXTRA_CA_CERTS at this file so HTTPS
+     * requests to LLM providers work.
+     */
+    fun caBundle(ctx: Context) = File(configDir(ctx), "ca-bundle.crt")
+
+    /**
+     * Synthetic /etc/resolv.conf for DNS resolution. musl's resolver reads
+     * this file to find nameservers. We write Google DNS + Cloudflare DNS.
+     */
+    fun resolvConf(ctx: Context) = File(configDir(ctx), "resolv.conf")
+
+    /**
      * Absolute path of the musl dynamic linker, as installed by Android's
      * package installer. Returns null on devices where the linker is not
      * present (e.g. non-arm64 or APK built without the bundled linker).
@@ -151,6 +166,76 @@ class BinaryManager(private val context: Context) {
                 FileOutputStream(out).use { output -> input.copyTo(output) }
             }
             if (!out.setExecutable(true, true)) error("Failed to chmod $target")
+        }
+    }
+
+    /**
+     * Ensures the network configuration files exist so opencode (Bun) can
+     * make HTTPS requests to LLM providers:
+     *
+     * 1. **CA certificate bundle** — Android stores system CAs in
+     *    /system/etc/security/cacerts/ as individual PEM files. Bun looks
+     *    for /etc/ssl/certs/ca-certificates.crt (Debian-style bundle) which
+     *    doesn't exist on Android. We concatenate all Android system CAs
+     *    into a single file and point SSL_CERT_FILE + NODE_EXTRA_CA_CERTS
+     *    at it.
+     *
+     * 2. **/etc/resolv.conf** — musl's DNS resolver reads this file to find
+     *    nameservers. We write a synthetic one with Google + Cloudflare DNS.
+     *
+     * Without these, opencode can start the server but every fetch() to an
+     * LLM provider fails with TLS/DNS errors — looks like "no internet".
+     */
+    fun ensureNetworkConfig(): Result<Unit> = runCatching {
+        val configDir = Paths.configDir(context)
+        configDir.mkdirs()
+
+        // 1. CA bundle — concatenate all Android system CA certificates.
+        val caBundle = Paths.caBundle(context)
+        if (!caBundle.exists() || caBundle.length() == 0L) {
+            val caDirs = listOf(
+                File("/system/etc/security/cacerts"),
+                File("/apex/com.android.conscrypt/cacerts"),
+            )
+            val sb = StringBuilder()
+            for (caDir in caDirs) {
+                if (!caDir.isDirectory) continue
+                val files = caDir.listFiles { f -> f.isFile && f.name.endsWith(".0") } ?: continue
+                for (f in files.sortedBy { it.name }) {
+                    try {
+                        val content = f.readText()
+                        if (content.contains("BEGIN CERTIFICATE")) {
+                            sb.append(content)
+                            if (!content.endsWith("\n")) sb.append("\n")
+                        }
+                    } catch (_: Exception) {
+                        // skip unreadable files
+                    }
+                }
+            }
+            if (sb.isEmpty()) {
+                android.util.Log.w("BinaryManager", "No Android CA certificates found!")
+            }
+            caBundle.writeText(sb.toString())
+            android.util.Log.i("BinaryManager",
+                "Wrote CA bundle: ${caBundle.absolutePath} (${caBundle.length()} bytes)")
+        }
+
+        // 2. resolv.conf — synthetic DNS config for musl's resolver.
+        val resolvConf = Paths.resolvConf(context)
+        if (!resolvConf.exists()) {
+            resolvConf.writeText(
+                """
+                # Synthetic resolv.conf for opencode (musl resolver)
+                nameserver 8.8.8.8
+                nameserver 8.8.4.4
+                nameserver 1.1.1.1
+                nameserver 1.0.0.1
+                options timeout:2 attempts:2
+                """.trimIndent() + "\n",
+            )
+            android.util.Log.i("BinaryManager",
+                "Wrote resolv.conf: ${resolvConf.absolutePath}")
         }
     }
 

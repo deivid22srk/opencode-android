@@ -208,6 +208,7 @@ class OpencodeProcess(private val context: Context) {
             )
 
         BinaryManager(context).ensureRuntime().getOrThrow()
+        BinaryManager(context).ensureNetworkConfig().getOrThrow()
         val binary = Paths.binary(context)
         if (!binary.exists() || !binary.canExecute()) {
             error("opencode binary not imported or not executable")
@@ -228,7 +229,13 @@ class OpencodeProcess(private val context: Context) {
             "serve",
             "--hostname", hostname,
             "--port", port.toString(),
+            // Enable verbose logging to help diagnose startup failures.
+            "--print-logs",
+            "--log-level", "DEBUG",
         )
+
+        val caBundle = Paths.caBundle(context)
+        val resolvConf = Paths.resolvConf(context)
 
         return ProcessBuilder(cmd).apply {
             directory(workDir)
@@ -242,6 +249,29 @@ class OpencodeProcess(private val context: Context) {
             environment()["OPENCODE_DISABLE_UPDATE"] = "1"
             environment()["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
             environment()["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
+            // Network configuration — critical for HTTPS to LLM providers.
+            // Bun (which opencode is built on) looks for CA certs at
+            // /etc/ssl/certs/ca-certificates.crt etc., which don't exist on
+            // Android. We point SSL_CERT_FILE and NODE_EXTRA_CA_CERTS at our
+            // bundled CA file (concatenated from Android system CAs).
+            if (caBundle.exists()) {
+                environment()["SSL_CERT_FILE"] = caBundle.absolutePath
+                environment()["SSL_CERT_DIR"] = home.absolutePath
+                environment()["NODE_EXTRA_CA_CERTS"] = caBundle.absolutePath
+                environment()["REQUESTS_CA_BUNDLE"] = caBundle.absolutePath
+                environment()["CURL_CA_BUNDLE"] = caBundle.absolutePath
+            }
+            // DNS — musl's resolver reads /etc/resolv.conf. Android doesn't
+            // have one, so we point the resolver at our synthetic file via
+            // the RES_OPTIONS env var (musl respects RES_OPTIONS for options
+            // but not for nameserver; we also create a symlink at /etc/resolv.conf
+            // is not possible, so we rely on the proot mode for that. In
+            // direct mode, musl falls back to 127.0.0.1 which doesn't work,
+            // so we also set RESOLV_HOST_CONF as a fallback).
+            if (resolvConf.exists()) {
+                environment()["RESOLV_HOST_CONF"] = resolvConf.absolutePath
+                environment()["RES_OPTIONS"] = "timeout:2 attempts:2"
+            }
             if (!password.isNullOrBlank()) {
                 environment()["OPENCODE_SERVER_PASSWORD"] = password
             }
