@@ -308,10 +308,8 @@ class OpencodeProcess(private val context: Context) {
         // CRITICAL: copy the opencode binary INTO the Alpine rootfs instead
         // of bind-mounting it. proot's file-bind mechanism has a known issue
         // where it creates a 0-byte mknod() placeholder at the guest path
-        // inside the rootfs (path/glue.c::build_glue). When the musl linker
-        // then opens the guest path, it can end up opening the empty
-        // placeholder instead of the real bound file → "Not a valid dynamic
-        // program". Copying the binary into the rootfs avoids this entirely.
+        // inside the rootfs (path/glue.c::build_glue). Copying the binary
+        // into the rootfs avoids this entirely.
         //
         // We ALWAYS overwrite — a previous proot run with file-bind may have
         // left a 0-byte placeholder at this path, and we need to replace it
@@ -327,7 +325,6 @@ class OpencodeProcess(private val context: Context) {
         if (!opencodeInRootfs.setExecutable(true, true)) {
             error("Failed to chmod opencode binary in rootfs")
         }
-        // Sanity check: verify the copy succeeded and the file is non-empty.
         val rootfsBinaryLen = opencodeInRootfs.length()
         val origBinaryLen = binary.length()
         if (rootfsBinaryLen < 1_000_000) {
@@ -342,68 +339,36 @@ class OpencodeProcess(private val context: Context) {
             "Copied opencode to rootfs: ${opencodeInRootfs.absolutePath} " +
                 "($rootfsBinaryLen bytes, original was $origBinaryLen)")
 
-        // Instead of copying our bundled libstdc++.so.6 / libgcc_s.so.1
-        // (which may have subtle ABI mismatches with Alpine's musl libc),
-        // we install the musl-built Alpine packages via `apk add`.
-        // This is exactly what ReTerminal does — Alpine's libstdc++ and
-        // libgcc packages are musl-linked and ABI-correct.
+        // Copy C++ runtime libs (libstdc++.so.6, libgcc_s.so.1) from our
+        // bundled assets directly into /usr/lib/ in the rootfs.
         //
-        // We also install gcompat (glibc compatibility shim) which fixes
-        // many "symbol not found" errors for musl binaries that were
-        // tested against glibc.
-        val opencodeLibInRootfs = File(proot.rootfsDir(), "usr/local/lib/opencode")
-        opencodeLibInRootfs.mkdirs()
-        // Run apk add for the C++ runtime deps + gcompat.
-        // --no-cache: don't use local cache (avoid cache DB write issues)
-        // --no-scripts: skip post-install scripts (they may try chmod/chown
-        //   on paths that proot/SELinux rejects)
-        // This is idempotent — apk skips already-installed packages.
+        // We do NOT use 'apk add' because:
+        // 1. apk uses flock() for database locking, which returns ENOSYS
+        //    ("Function not implemented") under proot on Android
+        // 2. The --bind=/proc causes SELinux 'setattr' denials that cascade
+        //    into apk database write failures
+        // 3. apk needs network access, adding latency and a failure point
         //
-        // First, check if the libs are already installed (by checking the
-        // actual files). If they are, skip the apk add entirely — this
-        // avoids re-running apk on every server start and avoids the
-        // "failed to write database" error if a previous run left the
-        // apk database inconsistent.
-        val libStdcxx = File(proot.rootfsDir(), "usr/lib/libstdc++.so.6")
-        val libGcc = File(proot.rootfsDir(), "usr/lib/libgcc_s.so.1")
-        if (libStdcxx.exists() && libGcc.exists()) {
-            android.util.Log.i("OpencodeProcess",
-                "libstdc++ and libgcc already installed, skipping apk add")
-        } else {
-            // Clean up any inconsistent apk database from a previous failed run.
-            // The 'installed' database is at /lib/apk/db/installed. If apk
-            // reports "System state may be inconsistent", deleting this file
-            // forces apk to rebuild it on the next run.
-            val apkDb = File(proot.rootfsDir(), "lib/apk/db/installed")
-            // Don't delete the whole file — just run apk fix afterwards if needed.
-
+        // Instead, we ship pre-built musl-linked versions of these libs
+        // (extracted from Alpine v3.24 .apk packages) in assets/alpine-libs/
+        // and copy them to /usr/lib/ in the rootfs. The musl linker searches
+        // /usr/lib/ by default, so opencode's DT_NEEDED entries resolve
+        // automatically.
+        val usrLibDir = File(proot.rootfsDir(), "usr/lib")
+        usrLibDir.mkdirs()
+        for (libName in listOf("libstdc++.so.6", "libgcc_s.so.1")) {
+            val dst = File(usrLibDir, libName)
+            if (dst.exists()) dst.delete()
             try {
-                val apkResult = proot.runCommand(
-                    listOf(
-                        "apk", "--no-cache", "--no-scripts",
-                        "add", "libstdc++", "libgcc", "gcompat",
-                    ),
-                    timeoutMs = 60_000,
-                )
-                apkResult.onFailure { e ->
-                    android.util.Log.w("OpencodeProcess",
-                        "apk add libstdc++ libgcc gcompat failed: ${e.message}")
-                    // If apk failed, the database might be inconsistent.
-                    // Try running 'apk fix' to repair it.
-                    if (e.message?.contains("inconsistent") == true ||
-                        e.message?.contains("Function not implemented") == true
-                    ) {
-                        android.util.Log.i("OpencodeProcess",
-                            "Attempting apk fix to repair database…")
-                        proot.runCommand(
-                            listOf("apk", "--no-cache", "fix"),
-                            timeoutMs = 30_000,
-                        )
-                    }
+                context.assets.open("alpine-libs/$libName").use { input ->
+                    java.io.FileOutputStream(dst).use { output -> input.copyTo(output) }
                 }
+                dst.setExecutable(true, true)
+                android.util.Log.i("OpencodeProcess",
+                    "Copied $libName to rootfs: ${dst.absolutePath} (${dst.length()} bytes)")
             } catch (e: Exception) {
-                android.util.Log.w("OpencodeProcess",
-                    "apk add threw exception: ${e.message}")
+                android.util.Log.e("OpencodeProcess",
+                    "Failed to copy $libName: ${e.message}")
             }
         }
 
