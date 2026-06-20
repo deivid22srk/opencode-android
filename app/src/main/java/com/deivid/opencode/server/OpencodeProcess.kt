@@ -298,30 +298,45 @@ class OpencodeProcess(private val context: Context) {
             error("Failed to chmod opencode binary in rootfs")
         }
         // Sanity check: verify the copy succeeded and the file is non-empty.
-        if (opencodeInRootfs.length() < 1_000_000) {
+        val rootfsBinaryLen = opencodeInRootfs.length()
+        val origBinaryLen = binary.length()
+        if (rootfsBinaryLen < 1_000_000) {
             error(
                 "opencode binary copy to rootfs failed — file is only " +
-                    "${opencodeInRootfs.length()} bytes (expected ~160 MB). " +
-                    "Original: ${binary.length()} bytes."
+                    "$rootfsBinaryLen bytes (expected ~160 MB). " +
+                    "Original: $origBinaryLen bytes. " +
+                    "Path: ${opencodeInRootfs.absolutePath}"
             )
         }
+        android.util.Log.i("OpencodeProcess",
+            "Copied opencode to rootfs: ${opencodeInRootfs.absolutePath} " +
+                "($rootfsBinaryLen bytes, original was $origBinaryLen)")
 
-        // Also copy our bundled C++ deps (libstdc++.so.6, libgcc_s.so.1)
-        // into the rootfs so opencode's DT_NEEDED entries resolve via
-        // Alpine's own musl linker.
+        // Instead of copying our bundled libstdc++.so.6 / libgcc_s.so.1
+        // (which may have subtle ABI mismatches with Alpine's musl libc),
+        // we install the musl-built Alpine packages via `apk add`.
+        // This is exactly what ReTerminal does — Alpine's libstdc++ and
+        // libgcc packages are musl-linked and ABI-correct.
+        //
+        // We also install gcompat (glibc compatibility shim) which fixes
+        // many "symbol not found" errors for musl binaries that were
+        // tested against glibc.
         val opencodeLibInRootfs = File(proot.rootfsDir(), "usr/local/lib/opencode")
         opencodeLibInRootfs.mkdirs()
-        val libDir = Paths.libDir(context)
-        for (libName in listOf("libstdc++.so.6", "libgcc_s.so.1")) {
-            val src = File(libDir, libName)
-            val dst = File(opencodeLibInRootfs, libName)
-            if (dst.exists()) dst.delete()
-            if (src.exists()) {
-                src.inputStream().use { input ->
-                    java.io.FileOutputStream(dst).use { output -> input.copyTo(output) }
-                }
-                dst.setExecutable(true, true)
+        // Run apk add for the C++ runtime deps + gcompat.
+        // This is idempotent — apk skips already-installed packages.
+        try {
+            val apkResult = proot.runCommand(
+                listOf("apk", "--no-cache", "add", "libstdc++", "libgcc", "gcompat"),
+                timeoutMs = 60_000,
+            )
+            apkResult.onFailure { e ->
+                android.util.Log.w("OpencodeProcess",
+                    "apk add libstdc++ libgcc gcompat failed: ${e.message}")
             }
+        } catch (e: Exception) {
+            android.util.Log.w("OpencodeProcess",
+                "apk add threw exception: ${e.message}")
         }
 
         // Mount the user's working directory as /root inside the sandbox so
@@ -333,27 +348,26 @@ class OpencodeProcess(private val context: Context) {
 
         // Build the opencode command that runs inside the proot sandbox.
         //
-        // Now that opencode is a real file inside the rootfs (at
-        // /usr/local/bin/opencode) AND its C++ deps are at
-        // /usr/local/lib/opencode/, we can invoke it directly via Alpine's
-        // own musl linker (/lib/ld-musl-aarch64.so.1) — which IS in the
-        // rootfs and works because proot's loader trick handles its execve.
+        // Now that opencode is a real file inside the rootfs AND its C++ deps
+        // (libstdc++.so.6, libgcc_s.so.1) are installed via apk into /usr/lib/
+        // (musl-built, ABI-correct), we can invoke opencode directly. Alpine's
+        // musl linker (/lib/ld-musl-aarch64.so.1) is the PT_INTERP and will
+        // resolve the DT_NEEDED entries from /usr/lib automatically.
         val opencodeArgs = mutableListOf(
             "serve",
             "--hostname", hostname,
             "--port", port.toString(),
         )
-        val opencodeLibPath = "/usr/local/lib/opencode"
         val shellCmd = buildString {
             if (!password.isNullOrBlank()) {
                 append("export OPENCODE_SERVER_PASSWORD=").append(escapeShell(password)).append("; ")
             }
             append("export OPENCODE_DISABLE_UPDATE=1 OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1; ")
-            // Launch opencode via Alpine's musl linker with our copied C++
-            // deps on the library path.
-            append("exec /lib/ld-musl-aarch64.so.1 ")
-                .append("--library-path ").append(escapeShell(opencodeLibPath)).append(" ")
-                .append("/usr/local/bin/opencode ")
+            // Launch opencode directly — Alpine's musl linker (which is the
+            // PT_INTERP) will be invoked by proot's loader trick, and it'll
+            // resolve libstdc++.so.6 + libgcc_s.so.1 from /usr/lib (installed
+            // via apk above).
+            append("exec /usr/local/bin/opencode ")
                 .append(opencodeArgs.joinToString(" ") { escapeShell(it) })
         }
 

@@ -146,26 +146,32 @@ class ProotSession(private val context: Context) {
         val cmd = mutableListOf(
             paths.prootBin.absolutePath,
             "--rootfs=${paths.alpineRootDir.absolutePath}",
-            "--change-id=0:0",         // fake root inside the sandbox
+            "--change-id=0:0",         // fake root inside the sandbox (= -0)
             "--link2symlink",          // termux fork: emulate hard links
             "--kill-on-exit",          // reap children when proot exits
+            "--sysvipc",               // termux fork: SysV IPC emulation
             "--kernel-release=6.1.0-PRoot-Android", // satisfy musl/glibc min-kernel checks
-            "-L",                      // resolve symlinks outside the rootfs
             // Bind standard virtual filesystems so /proc, /dev, /sys work
             "--bind=/dev",
             "--bind=/dev/urandom:/dev/random",
             "--bind=/proc",
             "--bind=/sys",
+            // /dev/fd, /dev/stdin, /dev/stdout, /dev/stderr — needed for
+            // shell redirection, process substitution, and many tools that
+            // expect these to exist (e.g. `<(cmd)`, `>&2`, etc.)
+            "--bind=/proc/self/fd:/dev/fd",
+            "--bind=/proc/self/fd/0:/dev/stdin",
+            "--bind=/proc/self/fd/1:/dev/stdout",
+            "--bind=/proc/self/fd/2:/dev/stderr",
+            // /dev/shm — needed by some musl/glibc shared-memory users
+            "--bind=${paths.alpineRootDir.absolutePath}/tmp:/dev/shm",
             // Bind the app's own data dir so opencode (which lives there) is
             // visible inside the sandbox. Mount it at the same path so any
             // hardcoded /data/data/<pkg>/... paths still resolve.
             "--bind=${context.filesDir.absolutePath}:${context.filesDir.absolutePath}",
             // Bind nativeLibraryDir so the bundled musl linker
             // (libopencode-musl.so) and proot loader (libproot-loader.so)
-            // are visible inside the sandbox. We need to invoke the musl
-            // linker explicitly to launch opencode (see OpencodeProcess),
-            // because Alpine's own /lib/ld-musl-aarch64.so.1 is in
-            // app_data_file and can't be execve()'d directly.
+            // are visible inside the sandbox.
             "--bind=$nativeLibDir:$nativeLibDir",
             // Bind /system so bionic-linked binaries (none in Alpine, but
             // defensive) and Android tools work.
@@ -182,6 +188,10 @@ class ProotSession(private val context: Context) {
             // proot writes a temp loader to /data/data/.../files/ (app_data_file)
             // and the kernel refuses to execve it — see termux/proot#338.
             environment()["PROOT_LOADER"] = paths.prootLoader.absolutePath
+            // PROOT_LOADER32 is used for 32-bit guest binaries. We don't ship
+            // a 32-bit loader (the app is arm64-v8a only), but setting the
+            // env var to the same value matches ReTerminal's pattern and is
+            // harmless — proot falls back to PROOT_LOADER for 64-bit guests.
             environment()["PROOT_LOADER_32"] = paths.prootLoader.absolutePath
             paths.prootTmpDir.mkdirs()
             environment()["PROOT_TMP_DIR"] = paths.prootTmpDir.absolutePath
