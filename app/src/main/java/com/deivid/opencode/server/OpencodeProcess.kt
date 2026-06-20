@@ -10,9 +10,30 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Wraps a running `opencode serve` process launched through the bundled musl
- * dynamic linker. Streams stdout/stderr to a log file and to a callback so the
- * UI can show real-time output.
+ * Wraps a running `opencode serve` process.
+ *
+ * ## Why we use `nativeLibraryDir`
+ *
+ * On Android 10+ a SELinux `neverallow` rule (b/112357170) blocks any
+ * `execve()` on files in `/data/data/<pkg>/files/` — they are labeled
+ * `app_data_file`, and `app_data_file:file execute_no_trans` is forbidden
+ * for `untrusted_app`. So we **cannot** execve the musl dynamic linker
+ * from there.
+ *
+ * The fix is to ship the musl linker inside the APK as
+ * `app/src/main/jniLibs/arm64-v8a/libopencode-musl.so`. The Android package
+ * installer extracts it to `/data/app/<pkg>-<hash>/lib/arm64/` at install
+ * time, where it gets labeled `apk_data_file`. SELinux DOES allow
+ * `execute_no_trans` on `apk_data_file` for any appdomain. So we can
+ * finally execve it.
+ *
+ * Once the musl linker is running, it `mmap(PROT_EXEC)`s the opencode
+ * binary from `filesDir` (labeled `app_data_file`). That needs only
+ * `execute` (not `execute_no_trans`), which IS allowed. So opencode itself
+ * can stay in `filesDir` where we can replace it at runtime.
+ *
+ * Reference:
+ *   https://github.com/agnostic-apollo/Android-Docs/blob/master/site/pages/en/projects/docs/apps/processes/app-data-file-execute-restrictions.md
  */
 class OpencodeProcess(private val context: Context) {
 
@@ -32,6 +53,18 @@ class OpencodeProcess(private val context: Context) {
     fun isRunning(): Boolean = processRef.get()?.isAlive == true
 
     /**
+     * Returns the path of the musl dynamic linker, as installed by Android's
+     * package installer under `/data/app/<pkg>-<hash>/lib/arm64/`. Returns
+     * null if the linker is not present — which means either the device is
+     * not arm64-v8a or the APK was built without the bundled musl linker.
+     */
+    fun muslLinkerPath(): String? {
+        val nativeDir = context.applicationInfo.nativeLibraryDir
+        val linker = File(nativeDir, "libopencode-musl.so")
+        return if (linker.exists() && linker.canExecute()) linker.absolutePath else null
+    }
+
+    /**
      * Launches `opencode serve` with the given options. Returns the bound URL.
      *
      * The opencode CLI prints `opencode server listening on http://...` to
@@ -46,14 +79,18 @@ class OpencodeProcess(private val context: Context) {
     ): Result<String> = runCatching {
         if (isRunning()) error("Server is already running")
 
+        // Resolve the musl linker — must be in nativeLibraryDir (apk_data_file)
+        val linkerPath = muslLinkerPath()
+            ?: error(
+                "musl dynamic linker not found in nativeLibraryDir. " +
+                    "The APK was probably built without the bundled linker — " +
+                    "rebuild with the latest source."
+            )
+
         BinaryManager(context).ensureRuntime().getOrThrow()
         val binary = Paths.binary(context)
         if (!binary.exists() || !binary.canExecute()) {
             error("opencode binary not imported or not executable")
-        }
-        val linker = Paths.linker(context)
-        if (!linker.exists() || !linker.canExecute()) {
-            error("musl dynamic linker is missing")
         }
         val libDir = Paths.libDir(context)
 
@@ -64,8 +101,15 @@ class OpencodeProcess(private val context: Context) {
         val logWriter = OutputStreamWriter(logFile.outputStream().buffered(), Charsets.UTF_8)
         writerRef.set(logWriter)
 
+        // Launch via the musl dynamic linker.
+        //   ld-musl-aarch64.so.1 --library-path <dir> <opencode> serve ...
+        //
+        // The linker is in apk_data_file (execve-able).
+        // opencode and the musl libs are in app_data_file — only mmap-ed
+        // by the linker, which is allowed because that uses the `execute`
+        // permission (not `execute_no_trans`).
         val cmd = mutableListOf(
-            linker.absolutePath,
+            linkerPath,
             "--library-path",
             libDir.absolutePath,
             binary.absolutePath,

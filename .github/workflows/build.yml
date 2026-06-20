@@ -32,7 +32,23 @@ jobs:
       - name: Verify musl runtime assets are present
         run: |
           set -e
-          for f in ld-musl-aarch64.so.1 libstdc++.so.6 libgcc_s.so.1; do
+          echo "Checking jniLibs (execve-able linker):"
+          for f in libopencode-musl.so; do
+            path="app/src/main/jniLibs/arm64-v8a/$f"
+            if [ ! -f "$path" ]; then
+              echo "::error::Missing jniLib: $path"
+              exit 1
+            fi
+            sz=$(stat -c%s "$path")
+            if [ "$sz" -lt 100000 ]; then
+              echo "::error::$path is suspiciously small ($sz bytes)"
+              exit 1
+            fi
+            echo "OK  $path  ($sz bytes)"
+          done
+          echo ""
+          echo "Checking bundled assets (musl runtime libs):"
+          for f in libstdc++.so.6 libgcc_s.so.1; do
             path="app/src/main/assets/musl/$f"
             if [ ! -f "$path" ]; then
               echo "::error::Missing musl runtime asset: $path"

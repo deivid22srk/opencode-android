@@ -20,47 +20,94 @@ to launch whatever `opencode` ARM64 binary the user imports. No Termux, no
 root, no proot — just a real `opencode serve` process running inside the
 app's sandbox.
 
-## How it works
+## How it works (the SELinux bit is the interesting part)
+
+On Android 10+ a SELinux `neverallow` rule (b/112357170) blocks any app from
+calling `execve()` on files in `/data/data/<pkg>/files/` — they are labeled
+`app_data_file`, and `app_data_file:file execute_no_trans` is forbidden for
+untrusted apps. So we **cannot** just `ProcessBuilder.start()` the musl
+linker from `filesDir/`.
+
+The fix is to ship the **musl dynamic linker** inside the APK as a jniLib:
+
+```
+app/src/main/jniLibs/arm64-v8a/libopencode-musl.so   ← renamed ld-musl-aarch64.so.1
+```
+
+The Android package installer extracts it at install time to
+`/data/app/<pkg>-<hash>/lib/arm64/libopencode-musl.so`, which gets labeled
+`apk_data_file` — and `execute_no_trans` **is** allowed there.
+
+The remaining runtime libs (`libc.musl-aarch64.so.1`, `libstdc++.so.6`,
+`libgcc_s.so.1`) only need to be `mmap(PROT_EXEC)`-ed by the linker — that
+uses the `execute` SELinux permission, which IS allowed on `app_data_file`.
+So they can stay in `filesDir/lib/` and be replaceable at runtime.
+
+When you tap **Start server**, the app launches:
+
+```
+/data/app/<pkg>-<hash>/lib/arm64/libopencode-musl.so \
+  --library-path /data/data/<pkg>/files/opencode/lib \
+  /data/data/<pkg>/files/opencode/bin/opencode \
+  serve --port 4096 --hostname 127.0.0.1
+```
+
+inside a foreground service.
+
+## How the import flow works
 
 1. **You** download an ARM64 release from
    https://github.com/anomalyco/opencode/releases
    (`opencode-linux-arm64-musl.tar.gz` is recommended).
 2. **You** open the app and tap **Import release file** — the app extracts
-   the `opencode` binary into its private storage and `chmod +x`s it.
-3. **The app** copies the musl dynamic linker, libc, libstdc++, and libgcc_s
-   out of `assets/musl/` into the same sandbox.
-4. When you tap **Start server**, the app launches:
-   ```
-   ld-musl-aarch64.so.1 --library-path <libdir> opencode serve --port 4096 --hostname 127.0.0.1
-   ```
-   inside a foreground service.
-5. The console shows live `stdout`/`stderr` and the URL the server is
+   the `opencode` binary into its private storage (`filesDir/opencode/bin/`)
+   and `chmod +x`s it.
+3. **The app** copies the bundled `libstdc++.so.6` and `libgcc_s.so.1` out
+   of `assets/musl/` into `filesDir/opencode/lib/`, and creates a symlink
+   `libc.musl-aarch64.so.1` → `nativeLibraryDir/libopencode-musl.so`.
+4. The console shows live `stdout`/`stderr` and the URL the server is
    listening on (`http://127.0.0.1:4096`).
 
 ## Architecture
 
 ```
 app/src/main/
-├── assets/musl/                       ← bundled musl runtime (~3.5 MB)
-│   ├── ld-musl-aarch64.so.1
+├── jniLibs/arm64-v8a/                  ← execve-able linker (extracted to apk_data_file)
+│   └── libopencode-musl.so             ← renamed ld-musl-aarch64.so.1
+├── assets/musl/                        ← mmap-ed runtime libs (extracted to app_data_file)
 │   ├── libstdc++.so.6
 │   └── libgcc_s.so.1
 ├── java/com/deivid/opencode/
 │   ├── MainActivity.kt                ← single-activity Compose host
 │   ├── OpenCodeApp.kt                 ← Application + notification channel
 │   ├── server/
-│   │   ├── BinaryManager.kt           ← import + extract + chmod binary
+│   │   ├── BinaryManager.kt           ← import + extract + chmod binary + Paths
 │   │   ├── TarReader.kt               ← minimal ustar tar parser
 │   │   ├── OpencodeProcess.kt         ← launches `opencode serve` via musl ld
 │   │   ├── OpencodeService.kt         ← foreground service + log streaming
-│   │   └── Paths.kt (inside BinaryManager.kt)
+│   │   └── NotificationIds.kt
 │   ├── viewmodel/ServerViewModel.kt   ← state holder
 │   └── ui/
 │       ├── theme/                     ← Material 3 Expressive colours + type
-│       ├── components/                ← StatusPill, LogViewer
+│       ├── components/                ← LogViewer
 │       └── screens/HomeScreen.kt      ← main UI
 └── res/                               ← strings, themes, icons, file_paths
 ```
+
+## Key SELinux facts (for maintainers)
+
+| Path | Label | `execute` (mmap) | `execute_no_trans` (execve) |
+|------|-------|------------------|-----------------------------|
+| `/data/data/<pkg>/files/...` | `app_data_file` | ✅ | ❌ neverallow (b/112357170) |
+| `/data/app/<pkg>-<hash>/lib/<abi>/*.so` | `apk_data_file` | ✅ | ✅ |
+
+So:
+- Files that need to be **execve()'d** → must be shipped as `jniLibs/*.so`
+  (gets `apk_data_file`).
+- Files that only need to be **mmap()'d as a library** → can stay in
+  `assets/` (gets `app_data_file`, but `execute` is allowed).
+- Files that need to be **replaceable at runtime** → must stay in `filesDir`
+  (gets `app_data_file`), and must never be execve()'d directly.
 
 ## Build
 

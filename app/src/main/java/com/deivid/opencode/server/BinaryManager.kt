@@ -13,12 +13,32 @@ import java.util.zip.GZIPInputStream
  *
  *   filesDir/opencode/
  *     ├── bin/opencode                <- user-imported ARM64 executable
- *     ├── lib/ld-musl-aarch64.so.1    <- musl dynamic linker (bundled)
- *     ├── lib/libc.musl-aarch64.so.1  <- musl libc (symlink to ld-musl)
- *     ├── lib/libstdc++.so.6          <- GNU C++ stdlib (bundled)
- *     ├── lib/libgcc_s.so.1           <- GCC support lib (bundled)
+ *     ├── lib/libc.musl-aarch64.so.1  <- symlink to nativeLibraryDir/libopencode-musl.so
+ *     ├── lib/libstdc++.so.6          <- GNU C++ stdlib (bundled in assets)
+ *     ├── lib/libgcc_s.so.1           <- GCC support lib (bundled in assets)
  *     ├── config/                     <- opencode user config
  *     └── logs/server.log
+ *
+ *   nativeLibraryDir  (= /data/app/<pkg>-<hash>/lib/arm64/)
+ *     └── libopencode-musl.so         <- musl dynamic linker (BUNDLED IN APK
+ *                                        as jniLibs/arm64-v8a/libopencode-musl.so)
+ *
+ * On Android 10+ a SELinux `neverallow` rule (b/112357170) blocks any
+ * `execve()` on files in `filesDir` — they are labeled `app_data_file`
+ * and `app_data_file:file execute_no_trans` is forbidden for untrusted
+ * apps. So we cannot execve the musl linker from there.
+ *
+ * Instead we ship the linker inside the APK as a jniLib. The package
+ * installer extracts it to `nativeLibraryDir` at install time, where it
+ * gets labeled `apk_data_file` and execve() works.
+ *
+ * The other libs (libc.musl-aarch64.so.1, libstdc++.so.6, libgcc_s.so.1)
+ * only need to be `mmap(PROT_EXEC)`-ed by the linker — that uses the
+ * `execute` SELinux permission, which IS allowed on `app_data_file`. So
+ * they can stay in filesDir/lib.
+ *
+ * Reference:
+ *   https://github.com/agnostic-apollo/Android-Docs/blob/master/site/pages/en/projects/docs/apps/processes/app-data-file-execute-restrictions.md
  */
 object Paths {
     const val SUBDIR = "opencode"
@@ -29,8 +49,18 @@ object Paths {
     fun configDir(ctx: Context) = File(root(ctx), "config")
     fun logsDir(ctx: Context) = File(root(ctx), "logs")
     fun binary(ctx: Context) = File(binDir(ctx), "opencode")
-    fun linker(ctx: Context) = File(libDir(ctx), "ld-musl-aarch64.so.1")
     fun logFile(ctx: Context) = File(logsDir(ctx), "server.log")
+
+    /**
+     * Absolute path of the musl dynamic linker, as installed by Android's
+     * package installer. Returns null on devices where the linker is not
+     * present (e.g. non-arm64 or APK built without the bundled linker).
+     */
+    fun muslLinker(ctx: Context): File? {
+        val dir = ctx.applicationInfo.nativeLibraryDir ?: return null
+        val f = File(dir, "libopencode-musl.so")
+        return if (f.exists() && f.canExecute()) f else null
+    }
 }
 
 data class BinaryInfo(
@@ -44,11 +74,16 @@ class BinaryManager(private val context: Context) {
 
     /**
      * Ensures the musl runtime libraries have been copied out of the APK
-     * `assets/musl/` directory into the app's private files dir, where they
-     * can be chmod-ed executable and loaded by the dynamic linker.
+     * `assets/musl/` directory into the app's private files dir.
      *
-     * This is required because Android's Bionic libc is incompatible with
-     * Linux/glibc/musl binaries — we need to ship musl itself.
+     * NOTE: We do NOT ship the musl dynamic linker (`ld-musl-aarch64.so.1`)
+     * here. It is shipped as `jniLibs/arm64-v8a/libopencode-musl.so` instead,
+     * so the installer extracts it into `nativeLibraryDir` where it's
+     * execve()-able. See the `Paths` doc for the full rationale.
+     *
+     * The remaining libs (libc.musl-aarch64.so.1, libstdc++.so.6, libgcc_s.so.1)
+     * only need to be `mmap(PROT_EXEC)`-ed by the linker, which uses the
+     * `execute` SELinux permission — that IS allowed on `app_data_file`.
      */
     fun ensureRuntime(): Result<Unit> = runCatching {
         if (Build.SUPPORTED_ABIS.none { it == "arm64-v8a" }) {
@@ -58,8 +93,47 @@ class BinaryManager(private val context: Context) {
         val libDir = Paths.libDir(context)
         libDir.mkdirs()
 
+        // The musl linker must already be present in nativeLibraryDir
+        // (it's bundled in the APK, not extracted from assets).
+        val linkerFile = Paths.muslLinker(context)
+            ?: error(
+                "musl dynamic linker (libopencode-musl.so) not found in " +
+                    "nativeLibraryDir=${context.applicationInfo.nativeLibraryDir}. " +
+                    "Reinstall the APK — the installer should have extracted it."
+            )
+
+        // libc.musl-aarch64.so.1 → symlink to nativeLibraryDir/libopencode-musl.so
+        // (musl libc lives inside the dynamic linker binary itself)
+        val libcSymlink = File(libDir, "libc.musl-aarch64.so.1")
+        if (!libcSymlink.exists()) {
+            try {
+                libcSymlink.delete()
+                val created = try {
+                    @Suppress("UnsafeNewApiCall")
+                    java.nio.file.Files.createSymbolicLink(
+                        libcSymlink.toPath(),
+                        linkerFile.toPath(),
+                    )
+                    true
+                } catch (e: Exception) {
+                    false
+                }
+                if (!created) {
+                    // Fallback: copy the bytes (uses 2x the space but works on
+                    // filesystems that don't support symlinks).
+                    linkerFile.inputStream().use { input ->
+                        FileOutputStream(libcSymlink).use { output -> input.copyTo(output) }
+                    }
+                    libcSymlink.setExecutable(true, true)
+                }
+            } catch (e: IOException) {
+                // Best-effort; if it fails, the linker will look in
+                // nativeLibraryDir as well via LD_LIBRARY_PATH fallback.
+            }
+        }
+
+        // libstdc++.so.6 and libgcc_s.so.1 (bundled in assets/musl/)
         val required = listOf(
-            "ld-musl-aarch64.so.1" to "ld-musl-aarch64.so.1",
             "libstdc++.so.6" to "libstdc++.so.6",
             "libgcc_s.so.1" to "libgcc_s.so.1",
         )
@@ -71,36 +145,6 @@ class BinaryManager(private val context: Context) {
                 FileOutputStream(out).use { output -> input.copyTo(output) }
             }
             if (!out.setExecutable(true, true)) error("Failed to chmod $target")
-        }
-
-        // musl libc lives inside the same file as the dynamic linker — the
-        // canonical libc.musl-aarch64.so.1 is a symlink to ld-musl-aarch64.so.1
-        val libcSymlink = File(libDir, "libc.musl-aarch64.so.1")
-        if (!libcSymlink.exists()) {
-            try {
-                libcSymlink.delete()
-                val target = File(libDir, "ld-musl-aarch64.so.1")
-                // Prefer symlink (saves space); fall back to copy on filesystems
-                // that don't support them.
-                val created = try {
-                    @Suppress("UnsafeNewApiCall")
-                    java.nio.file.Files.createSymbolicLink(
-                        libcSymlink.toPath(),
-                        target.toPath(),
-                    )
-                    true
-                } catch (e: Exception) {
-                    false
-                }
-                if (!created) {
-                    target.inputStream().use { input ->
-                        FileOutputStream(libcSymlink).use { output -> input.copyTo(output) }
-                    }
-                    libcSymlink.setExecutable(true, true)
-                }
-            } catch (e: IOException) {
-                // ignore — the linker may still resolve libc from the same file
-            }
         }
     }
 
@@ -121,8 +165,7 @@ class BinaryManager(private val context: Context) {
         }
 
         try {
-            val binary = extractAndInstall(tmp)
-            binary
+            extractAndInstall(tmp)
         } finally {
             tmp.delete()
         }
@@ -212,7 +255,7 @@ class BinaryManager(private val context: Context) {
      */
     private fun readVersion(binary: File): String {
         return try {
-            val linker = Paths.linker(context)
+            val linker = Paths.muslLinker(context) ?: return "imported"
             val libDir = Paths.libDir(context)
             val pb = ProcessBuilder(
                 linker.absolutePath,
@@ -226,9 +269,9 @@ class BinaryManager(private val context: Context) {
             val out = proc.inputStream.bufferedReader().readText().trim()
             proc.waitFor()
             // opencode prints its version on the first line
-            out.lineSequence().firstOrNull()?.trim() ?: "unknown"
+            out.lineSequence().firstOrNull()?.trim() ?: "imported"
         } catch (e: Exception) {
-            "unknown"
+            "imported"
         }
     }
 

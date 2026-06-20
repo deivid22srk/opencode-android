@@ -56,6 +56,16 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "/META-INF/DEPENDENCIES"
         }
+        // Critical: must be true so the package installer extracts our
+        // jniLibs/arm64-v8a/libopencode-musl.so to
+        //   /data/app/<pkg>-<hash>/lib/arm64/libopencode-musl.so
+        // which is labeled `apk_data_file` and therefore execve()-able.
+        // Without this, jniLibs stay zipped inside the APK and SELinux
+        // neverallows block execve() on /data/data/.../files/.
+        // See: https://github.com/agnostic-apollo/Android-Docs/blob/master/site/pages/en/projects/docs/apps/processes/app-data-file-execute-restrictions.md
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 }
 
