@@ -10,17 +10,19 @@ import android.os.IBinder
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.deivid.opencode.data.SetupPreferences
 import com.deivid.opencode.server.BinaryInfo
 import com.deivid.opencode.server.BinaryManager
 import com.deivid.opencode.server.OpencodeService
 import com.deivid.opencode.server.Paths
 import com.deivid.opencode.server.ServerEvent
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class ServerStatus { IDLE, STARTING, RUNNING, STOPPING, ERROR }
 
@@ -41,20 +43,39 @@ data class ServerState(
 class ServerViewModel(app: Application) : AndroidViewModel(app) {
 
     private val binaryManager = BinaryManager(app)
+    private val preferences = SetupPreferences(app)
     private var service: OpencodeService? = null
 
     private val _state = MutableStateFlow(
         ServerState(
             binary = binaryManager.currentBinary(),
-            // Default workspace is the app-private sandbox folder. The user
-            // can override this in the UI if they want opencode to operate on
-            // a different project root.
+            // Default workspace is the app-private sandbox folder; will be
+            // overridden by the persisted setup preference if available.
             workspacePath = Paths.workspaceDir(app).absolutePath,
         )
     )
     val state: StateFlow<ServerState> = _state.asStateFlow()
 
     private val logBuilder = StringBuilder()
+
+    init {
+        // Sync workspace path from preferences → state, so the HomeScreen
+        // shows the folder the user picked during setup.
+        viewModelScope.launch {
+            preferences.data.collectLatest { data ->
+                data.workspacePath?.let { p ->
+                    _state.value = _state.value.copy(workspacePath = p)
+                }
+                data.binaryVersion?.let { v ->
+                    // Refresh binary info in case it changed
+                    val b = binaryManager.currentBinary()
+                    if (b != null) {
+                        _state.value = _state.value.copy(binary = b.copy(version = v))
+                    }
+                }
+            }
+        }
+    }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -78,12 +99,9 @@ class ServerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun bind(context: Context) {
-        ContextCompat.startForegroundService(
-            context,
-            Intent(context, OpencodeService::class.java),
-        )
-        // Start the service without an action first so the binding can attach.
-        // The actual START command is sent when the user taps "Start server".
+        // Bind without an action so the binding attaches but the server
+        // isn't started yet. The START command is sent when the user taps
+        // "Start server".
         context.bindService(
             Intent(context, OpencodeService::class.java),
             connection,
@@ -112,10 +130,18 @@ class ServerViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(workspacePath = path.trim())
     }
 
+    /**
+     * Imports a release file the user picked via the system file picker.
+     * All file IO is dispatched to Dispatchers.IO so the UI thread is never
+     * blocked — this fixes the freeze the user observed during manual import.
+     */
     fun importRelease(uri: Uri) {
+        if (_state.value.importBusy) return
         _state.value = _state.value.copy(importBusy = true, importMessage = null)
         viewModelScope.launch {
-            val result = binaryManager.importFromUri(uri)
+            val result = withContext(Dispatchers.IO) {
+                binaryManager.importFromUri(uri)
+            }
             result
                 .onSuccess { info ->
                     _state.value = _state.value.copy(
@@ -124,6 +150,10 @@ class ServerViewModel(app: Application) : AndroidViewModel(app) {
                         binary = info,
                         errorMessage = null,
                     )
+                    // Persist the new binary version so setup state stays in sync.
+                    viewModelScope.launch {
+                        preferences.setBinaryInfo(info.version, info.importedAt)
+                    }
                 }
                 .onFailure { e ->
                     _state.value = _state.value.copy(
@@ -138,6 +168,19 @@ class ServerViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteBinary() {
         binaryManager.deleteBinary()
         _state.value = _state.value.copy(binary = null)
+        viewModelScope.launch {
+            preferences.setBinaryInfo(null, 0L)
+        }
+    }
+
+    /**
+     * Resets the setup state and (typically) takes the user back to the
+     * SetupScreen so they can re-pick the release and the workspace folder.
+     */
+    fun rerunSetup() {
+        viewModelScope.launch {
+            preferences.setCompleted(false)
+        }
     }
 
     fun startServer(context: Context) {

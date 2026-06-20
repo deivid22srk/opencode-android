@@ -177,6 +177,21 @@ class BinaryManager(private val context: Context) {
         }
     }
 
+    /**
+     * Imports a release file already staged on local disk (e.g. one we just
+     * downloaded with [com.deivid.opencode.data.DownloadManager]). Same
+     * extraction logic as [importFromUri], but skips the URI-to-file copy.
+     */
+    fun importFromFile(staged: File): Result<BinaryInfo> = runCatching {
+        ensureRuntime().getOrThrow()
+        try {
+            extractAndInstall(staged)
+        } finally {
+            // The caller owns the staged file (e.g. cacheDir); clean it up.
+            staged.delete()
+        }
+    }
+
     private fun extractAndInstall(staged: File): BinaryInfo {
         val binDir = Paths.binDir(context).apply { mkdirs() }
         val out = Paths.binary(context)
