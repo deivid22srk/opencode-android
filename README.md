@@ -1,12 +1,14 @@
 # OpenCode Android
 
-Run the [opencode-ai](https://github.com/anomalyco/opencode) coding agent as a
-**localhost server on your Android phone** — built with Jetpack Compose and
-Material 3 Expressive.
-
+[![Build APK](https://github.com/deivid22srk/opencode-android/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/deivid22srk/opencode-android/actions/workflows/build.yml)
 ![status](https://img.shields.io/badge/platform-Android%20arm64--v8a-3DDC84)
 ![language](https://img.shields.io/badge/language-Kotlin%20%2B%20Compose-7F52FF)
 ![design](https://img.shields.io/badge/design-Material%203%20Expressive-006AC9)
+![minSdk](https://img.shields.io/badge/minSdk-26%20(Android%208.0)-blueviolet)
+
+Run the [opencode-ai](https://github.com/anomalyco/opencode) coding agent as a
+**localhost server on your Android phone** — built with Jetpack Compose and
+Material 3 Expressive.
 
 ## Why this exists
 
@@ -70,6 +72,27 @@ CI runs on every push:
 ```
 
 Artifacts are uploaded automatically by `.github/workflows/build.yml`.
+
+**Latest APK:** download from the
+[Actions tab](https://github.com/deivid22srk/opencode-android/actions/workflows/build.yml)
+— pick the most recent green run, scroll to "Artifacts", grab
+`opencode-android-debug`.
+
+## First run
+
+1. **Install** the APK on an ARM64 phone (Android 8.0+).
+2. On a computer or your phone, download
+   `opencode-linux-arm64-musl.tar.gz` from
+   [opencode releases](https://github.com/anomalyco/opencode/releases).
+3. Open the app → tap **Import release file** → pick the tar.gz.
+4. Set a port (default `4096`) and optionally a password.
+5. Tap **Start server**. The console will print
+   `opencode server listening on http://127.0.0.1:4096`.
+6. Open that URL in any browser on the phone — the opencode HTTP API is now
+   live.
+
+> The server keeps running in the background via a foreground service. A
+> persistent notification shows the URL; tap "Stop" on it to halt the server.
 
 ## Requirements
 
