@@ -32,26 +32,18 @@ jobs:
       - name: Verify musl runtime assets are present
         run: |
           set -e
-          echo "Checking jniLibs (execve-able linker + proot loader):"
-          for f in libopencode-musl.so libproot-loader.so; do
+          echo "Checking jniLibs (all execve-able binaries):"
+          # All 5 .so files must be in jniLibs/arm64-v8a/ so the installer
+          # extracts them to apk_data_file (execve allowed):
+          #   - libopencode-musl.so   = musl dynamic linker
+          #   - libproot.so           = proot binary itself
+          #   - libproot-loader.so    = proot's loader for in-sandbox execve
+          #   - libtalloc.so.2        = proot dep (DT_NEEDED)
+          #   - libandroid-shmem.so   = proot dep (DT_NEEDED)
+          for f in libopencode-musl.so libproot.so libproot-loader.so libtalloc.so.2 libandroid-shmem.so; do
             path="app/src/main/jniLibs/arm64-v8a/$f"
             if [ ! -f "$path" ]; then
               echo "::error::Missing jniLib: $path"
-              exit 1
-            fi
-            sz=$(stat -c%s "$path")
-            if [ "$sz" -lt 10000 ]; then
-              echo "::error::$path is suspiciously small ($sz bytes)"
-              exit 1
-            fi
-            echo "OK  $path  ($sz bytes)"
-          done
-          echo ""
-          echo "Checking proot assets (binary + deps):"
-          for f in proot/proot proot/lib/libtalloc.so.2 proot/lib/libandroid-shmem.so; do
-            path="app/src/main/assets/$f"
-            if [ ! -f "$path" ]; then
-              echo "::error::Missing proot asset: $path"
               exit 1
             fi
             sz=$(stat -c%s "$path")
@@ -75,7 +67,7 @@ jobs:
           fi
           echo "OK  $path  ($sz bytes)"
           echo ""
-          echo "Checking bundled musl runtime libs:"
+          echo "Checking bundled musl runtime libs (used by direct launch mode):"
           for f in libstdc++.so.6 libgcc_s.so.1; do
             path="app/src/main/assets/musl/$f"
             if [ ! -f "$path" ]; then
@@ -93,7 +85,7 @@ jobs:
       - name: Build debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Verify APK contains execve-able musl linker + proot loader
+      - name: Verify APK contains all execve-able binaries in lib/arm64-v8a/
         run: |
           set -e
           APK=app/build/outputs/apk/debug/app-debug.apk
@@ -101,11 +93,11 @@ jobs:
             echo "::error::APK not found at $APK"
             exit 1
           fi
-          echo "Inspecting $APK for libopencode-musl.so + libproot-loader.so in lib/arm64-v8a/..."
-          for lib in libopencode-musl.so libproot-loader.so; do
+          echo "Inspecting $APK for all 5 .so files in lib/arm64-v8a/..."
+          for lib in libopencode-musl.so libproot.so libproot-loader.so libtalloc.so.2 libandroid-shmem.so; do
             if ! unzip -l "$APK" | grep -q "lib/arm64-v8a/$lib"; then
               echo "::error::$lib is missing from lib/arm64-v8a/ in the APK"
-              unzip -l "$APK" | grep -E "lib/|musl|proot" || true
+              unzip -l "$APK" | grep -E "lib/" || true
               exit 1
             fi
             echo "OK  $lib present in lib/arm64-v8a/"
@@ -123,8 +115,8 @@ jobs:
             exit 1
           fi
           echo ""
-          echo "APK contents (lib + musl + proot + alpine):"
-          unzip -l "$APK" | grep -E "lib/|musl|proot|alpine" | head -30
+          echo "APK contents (lib + musl + alpine):"
+          unzip -l "$APK" | grep -E "lib/|musl|alpine" | head -30
 
       - name: Build release APK (unsigned)
         if: startsWith(github.ref, 'refs/tags/v')

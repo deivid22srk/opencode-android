@@ -1,9 +1,7 @@
 package com.deivid.opencode.server
 
 import android.content.Context
-import android.util.Log
 import java.io.File
-import java.io.FileOutputStream
 import java.util.zip.GZIPInputStream
 
 /**
@@ -46,39 +44,41 @@ class ProotSession(private val context: Context) {
      * extracted to filesDir. Idempotent — skips work that's already done.
      *
      * Returns the directory layout that [launch] expects.
+     *
+     * NOTE: The proot binary itself, the proot loader, and proot's dynamic
+     * deps (libtalloc, libandroid-shmem) all live in nativeLibraryDir —
+     * shipped as jniLibs so the installer extracts them to apk_data_file
+     * (execve allowed). Only the Alpine rootfs is extracted from assets at
+     * runtime.
      */
     fun ensureInstalled(): Result<ProotPaths> = runCatching {
         val paths = ProotPaths(context)
 
-        // 1. proot binary + libs (extract from assets)
-        paths.prootBin.parentFile?.mkdirs()
-        paths.prootLibDir.mkdirs()
-
-        if (!paths.prootBin.exists() || paths.prootBin.length() == 0L) {
-            copyAsset("proot/proot", paths.prootBin)
-            if (!paths.prootBin.setExecutable(true, true)) {
-                error("Failed to chmod proot binary")
-            }
+        // 1. Verify proot binary exists in nativeLibraryDir (apk_data_file)
+        if (!paths.prootBin.exists() || !paths.prootBin.canExecute()) {
+            error(
+                "proot binary not found in nativeLibraryDir " +
+                    "(${context.applicationInfo.nativeLibraryDir}). " +
+                    "Reinstall the APK — the installer should have extracted it."
+            )
         }
 
-        for ((asset, target) in listOf(
-            "proot/lib/libtalloc.so.2" to File(paths.prootLibDir, "libtalloc.so.2"),
-            "proot/lib/libandroid-shmem.so" to File(paths.prootLibDir, "libandroid-shmem.so"),
-        )) {
-            if (!target.exists() || target.length() == 0L) {
-                copyAsset(asset, target)
-                target.setExecutable(true, true)
-            }
+        // 2. Verify proot loader (also in nativeLibraryDir)
+        if (!paths.prootLoader.exists() || !paths.prootLoader.canExecute()) {
+            error(
+                "proot loader not found in nativeLibraryDir. " +
+                    "Reinstall the APK."
+            )
         }
 
-        // 2. Alpine rootfs (only extract if not already done)
+        // 3. Alpine rootfs (only extract if not already done)
         if (!paths.alpineRootDir.isDirectory ||
             !File(paths.alpineRootDir, "etc/apk/repositories").exists()
         ) {
             extractAlpineRootfs(paths.alpineRootDir)
         }
 
-        // 3. Rootfs fixups (mirror what proot-distro does on install)
+        // 4. Rootfs fixups (mirror what proot-distro does on install)
         writeResolvConf(paths.alpineRootDir)
         ensureApkRepositories(paths.alpineRootDir)
         writePasswdEntry(paths.alpineRootDir)
@@ -103,14 +103,16 @@ class ProotSession(private val context: Context) {
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
             ?: error("nativeLibraryDir is null — APK may not have been installed correctly")
 
-        val loaderPath = File(nativeLibDir, "libproot-loader.so")
-        if (!loaderPath.exists()) {
-            error("libproot-loader.so missing in nativeLibraryDir=$nativeLibDir")
-        }
+        // All proot-related binaries live in nativeLibraryDir (apk_data_file):
+        //   - libproot.so         = the proot binary itself (execve target)
+        //   - libproot-loader.so  = the loader that proot uses to mmap targets
+        //   - libtalloc.so.2      = proot's only dynamic dep
+        //   - libandroid-shmem.so = Android shmem emulation for proot
+        //
+        // We must set LD_LIBRARY_PATH to nativeLibDir so the bionic dynamic
+        // linker can find libtalloc.so.2 + libandroid-shmem.so when proot
+        // loads. The proot binary itself is invoked by absolute path.
 
-        // proot itself is a bionic binary, so we launch it via Android's
-        // own linker64. We set LD_LIBRARY_PATH so it can find libtalloc.so.2
-        // and libandroid-shmem.so in our private lib dir.
         val cmd = mutableListOf(
             paths.prootBin.absolutePath,
             "--rootfs=${paths.alpineRootDir.absolutePath}",
@@ -139,15 +141,20 @@ class ProotSession(private val context: Context) {
         cmd.addAll(argv)
 
         return ProcessBuilder(cmd).apply {
-            environment()["PROOT_LOADER"] = loaderPath.absolutePath
-            environment()["PROOT_LOADER_32"] = loaderPath.absolutePath
+            // THE KEY: proot uses this env var to find its loader. Without it,
+            // proot writes a temp loader to /data/data/.../files/ (app_data_file)
+            // and the kernel refuses to execve it — see termux/proot#338.
+            environment()["PROOT_LOADER"] = paths.prootLoader.absolutePath
+            environment()["PROOT_LOADER_32"] = paths.prootLoader.absolutePath
             paths.prootTmpDir.mkdirs()
             environment()["PROOT_TMP_DIR"] = paths.prootTmpDir.absolutePath
             // Disable seccomp acceleration — Android often restricts seccomp
             // install for untrusted apps.
             environment()["PROOT_NO_SECCOMP"] = "1"
-            // proot's deps live in our private lib dir
-            environment()["LD_LIBRARY_PATH"] = paths.prootLibDir.absolutePath
+            // proot's deps (libtalloc.so.2, libandroid-shmem.so) are in
+            // nativeLibDir alongside proot itself. Bionic's linker64 reads
+            // LD_LIBRARY_PATH at execve time.
+            environment()["LD_LIBRARY_PATH"] = nativeLibDir
             // Clean environment inside the sandbox — let /etc/profile set PATH
             environment()["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
             environment()["HOME"] = "/root"
@@ -206,13 +213,6 @@ class ProotSession(private val context: Context) {
 
     // ----- Bootstrap helpers -----
 
-    private fun copyAsset(assetPath: String, target: File) {
-        target.parentFile?.mkdirs()
-        context.assets.open(assetPath).use { input ->
-            FileOutputStream(target).use { output -> input.copyTo(output) }
-        }
-    }
-
     private fun extractAlpineRootfs(targetDir: File) {
         targetDir.mkdirs()
         // We ship the rootfs as `alpine-rootfs.bin` to dodge AAPT2's habit of
@@ -260,24 +260,47 @@ class ProotSession(private val context: Context) {
         }
         File(rootfs, "root").mkdirs()
     }
-
-    companion object {
-        private const val TAG = "ProotSession"
-    }
 }
 
 /**
- * Layout of files managed by [ProotSession], all under filesDir.
+ * Layout of files managed by [ProotSession].
+ *
+ * - All proot-related binaries live in `nativeLibraryDir` (= the dir the
+ *   package installer extracts jniLibs to, labeled `apk_data_file`). This
+ *   is the ONLY location where execve() is allowed on Android 10+.
+ * - The Alpine rootfs is extracted at runtime from `assets/alpine-rootfs.bin`
+ *   into `filesDir/alpine/` (labeled `app_data_file`). Files inside the
+ *   rootfs only need to be mmap(PROT_EXEC)'d by proot's loader, which is
+ *   allowed on `app_data_file`.
+ * - `prootTmpDir` is a writable scratch dir for proot's internal use.
  */
 data class ProotPaths(private val ctx: Context) {
-    val prootDir: File get() = File(ctx.filesDir, "proot")
-    val prootBin: File get() = File(prootDir, "bin/proot")
-    val prootLibDir: File get() = File(prootDir, "lib")
-    val prootTmpDir: File get() = File(prootDir, "tmp")
-    val alpineRootDir: File get() = File(ctx.filesDir, "alpine")
+    private val nativeLibDir: String?
+        get() = ctx.applicationInfo.nativeLibraryDir
 
-    /** True if the Alpine rootfs looks installed. */
+    /** proot binary (renamed to libproot.so in jniLibs, apk_data_file). */
+    val prootBin: File
+        get() = File(nativeLibDir ?: "", "libproot.so")
+
+    /** proot loader (libproot-loader.so in jniLibs, apk_data_file). */
+    val prootLoader: File
+        get() = File(nativeLibDir ?: "", "libproot-loader.so")
+
+    /** Directory where proot's deps (libtalloc, libandroid-shmem) live. */
+    val prootLibDir: File
+        get() = File(nativeLibDir ?: "")
+
+    /** Writable scratch dir for proot's internal temp files. */
+    val prootTmpDir: File
+        get() = File(ctx.filesDir, "proot/tmp")
+
+    /** Extracted Alpine rootfs (app_data_file). */
+    val alpineRootDir: File
+        get() = File(ctx.filesDir, "alpine")
+
+    /** True if the proot binary is installed AND the rootfs is extracted. */
     fun isInstalled(): Boolean =
         prootBin.exists() && prootBin.canExecute() &&
+            prootLoader.exists() && prootLoader.canExecute() &&
             File(alpineRootDir, "etc/apk/repositories").exists()
 }
