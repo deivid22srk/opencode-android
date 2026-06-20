@@ -215,12 +215,31 @@ class ProotSession(private val context: Context) {
 
     private fun extractAlpineRootfs(targetDir: File) {
         targetDir.mkdirs()
-        // Use our existing TarReader to walk the alpine-minirootfs tarball.
-        // It's a regular ustar .tar.gz so the same code that extracts the
-        // opencode binary works here too — we just extract EVERY entry
-        // instead of stopping at a specific name.
-        GZIPInputStream(context.assets.open("alpine-rootfs.tar.gz")).use { gz ->
-            FullTarExtractor(gz).extractTo(targetDir)
+        // AAPT transparently decompresses *.gz assets during APK assembly,
+        // stripping the .gz suffix. We try both names — the original
+        // `alpine-rootfs.tar.gz` (kept intact when noCompress is set in
+        // build.gradle) and the auto-decompressed `alpine-rootfs.tar`.
+        val (assetName, isGzipped) = try {
+            context.assets.open("alpine-rootfs.tar.gz").use { "alpine-rootfs.tar.gz" to true }
+        } catch (e: java.io.FileNotFoundException) {
+            try {
+                context.assets.open("alpine-rootfs.tar").use { "alpine-rootfs.tar" to false }
+            } catch (e2: java.io.FileNotFoundException) {
+                error(
+                    "Alpine rootfs asset not found in APK. Looked for both " +
+                        "'alpine-rootfs.tar.gz' and 'alpine-rootfs.tar'. " +
+                        "Original error: ${e2.message}"
+                )
+            }
+        }
+
+        val inputStream = if (isGzipped) {
+            GZIPInputStream(context.assets.open(assetName))
+        } else {
+            context.assets.open(assetName)
+        }
+        inputStream.use { stream ->
+            FullTarExtractor(stream).extractTo(targetDir)
         }
     }
 

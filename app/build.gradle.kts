@@ -66,6 +66,15 @@ android {
         jniLibs {
             useLegacyPackaging = true
         }
+
+        // Keep AAPT from transparently decompressing our .tar.gz assets.
+        // By default AAPT sees `*.gz` and decompresses it during APK assembly,
+        // which silently strips the `.gz` suffix — our code then can't find
+        // `alpine-rootfs.tar.gz` via AssetManager. The noCompress list tells
+        // AAPT to leave these files alone.
+        aaptOptions {
+            noCompress ".gz", ".tar.gz", "alpine-rootfs.tar.gz"
+        }
     }
 }
 

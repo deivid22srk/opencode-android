@@ -110,6 +110,19 @@ jobs:
             fi
             echo "OK  $lib present in lib/arm64-v8a/"
           done
+
+          # AAPT must NOT have decompressed alpine-rootfs.tar.gz → alpine-rootfs.tar
+          # (controlled by `aaptOptions { noCompress ".gz" }` in build.gradle.kts).
+          if unzip -l "$APK" | grep -q "assets/alpine-rootfs.tar.gz"; then
+            echo "OK  alpine-rootfs.tar.gz present (preserved by noCompress)"
+          elif unzip -l "$APK" | grep -q "assets/alpine-rootfs.tar"; then
+            echo "::warning::alpine-rootfs.tar.gz was decompressed to alpine-rootfs.tar by AAPT"
+            echo "The Kotlin code falls back to the .tar name, but this wastes ~5 MB of APK space."
+            echo "Check that build.gradle.kts has aaptOptions { noCompress '.gz' }."
+          else
+            echo "::error::Neither alpine-rootfs.tar.gz nor alpine-rootfs.tar is in the APK"
+            exit 1
+          fi
           echo ""
           echo "APK contents (lib + musl + proot + alpine):"
           unzip -l "$APK" | grep -E "lib/|musl|proot|alpine" | head -30
