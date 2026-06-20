@@ -8,17 +8,27 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.deivid.opencode.data.SetupPreferences
 import com.deivid.opencode.ui.screens.HomeScreen
+import com.deivid.opencode.ui.screens.SetupScreen
 import com.deivid.opencode.ui.theme.OpenCodeTheme
 import com.deivid.opencode.viewmodel.ServerViewModel
+import com.deivid.opencode.viewmodel.SetupViewModel
+import kotlinx.coroutines.flow.first
 
 class MainActivity : ComponentActivity() {
 
@@ -45,14 +55,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             OpenCodeTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    val viewModel: ServerViewModel = viewModel()
-                    LaunchedEffect(Unit) {
-                        viewModel.bind(this@MainActivity)
-                    }
-                    HomeScreen(
-                        viewModel = viewModel,
-                        contentPadding = PaddingValues(0.dp),
-                    )
+                    AppRouter(activity = this)
                 }
             }
         }
@@ -60,7 +63,49 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        // The view-model doesn't own the service; let it outlive the activity
-        // so the server keeps running when the user backgrounds the app.
+    }
+}
+
+/**
+ * Decides whether to show the [SetupScreen] or [HomeScreen].
+ * Reads the DataStore flag on first composition and then stays on
+ * whichever screen is appropriate.
+ */
+@Composable
+private fun AppRouter(activity: ComponentActivity) {
+    var showSetup by remember { mutableStateOf<Boolean?>(null) }
+    val setupPrefs = remember { SetupPreferences(activity) }
+
+    // One-shot check — stays on whatever screen it lands on
+    LaunchedEffect(Unit) {
+        showSetup = !setupPrefs.isComplete()
+    }
+
+    when (showSetup) {
+        null -> {
+            // Still loading the DataStore preference
+            /* no-op, blank screen */
+        }
+        true -> {
+            val setupViewModel: SetupViewModel = viewModel()
+            SetupScreen(
+                viewModel = setupViewModel,
+                onComplete = {
+                    // When setup completes, switch to the home screen.
+                    // The SetupViewModel already persisted the flag.
+                    showSetup = false
+                },
+            )
+        }
+        false -> {
+            val serverViewModel: ServerViewModel = viewModel()
+            LaunchedEffect(Unit) {
+                serverViewModel.bind(activity)
+            }
+            HomeScreen(
+                viewModel = serverViewModel,
+                contentPadding = PaddingValues(0.dp),
+            )
+        }
     }
 }

@@ -159,6 +159,11 @@ class BinaryManager(private val context: Context) {
      *  - opencode-linux-arm64*.tar.gz
      *  - opencode-linux-arm64*.zip
      *  - the bare `opencode` executable
+     *
+     * NOTE: The caller MUST invoke this from a coroutine running on
+     * [Dispatchers.IO] (or wrap the call in `withContext(Dispatchers.IO)`).
+     * The staging copy (~50 MB) is blocking I/O and will freeze the UI
+     * if called on the main thread.
      */
     fun importFromUri(uri: android.net.Uri): Result<BinaryInfo> = runCatching {
         ensureRuntime().getOrThrow()
@@ -175,6 +180,16 @@ class BinaryManager(private val context: Context) {
         } finally {
             tmp.delete()
         }
+    }
+
+    /**
+     * Imports opencode from an already-staged local file (e.g. a download).
+     * This is the same as [importFromUri] but skips the URI-to-file staging.
+     * Caller must run on an IO thread.
+     */
+    fun importFromFile(staged: File): Result<BinaryInfo> = runCatching {
+        ensureRuntime().getOrThrow()
+        extractAndInstall(staged)
     }
 
     private fun extractAndInstall(staged: File): BinaryInfo {

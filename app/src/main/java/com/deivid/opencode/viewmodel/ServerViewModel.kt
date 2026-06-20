@@ -15,7 +15,10 @@ import com.deivid.opencode.server.BinaryManager
 import com.deivid.opencode.server.OpencodeService
 import com.deivid.opencode.server.Paths
 import com.deivid.opencode.server.ServerEvent
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -115,7 +118,12 @@ class ServerViewModel(app: Application) : AndroidViewModel(app) {
     fun importRelease(uri: Uri) {
         _state.value = _state.value.copy(importBusy = true, importMessage = null)
         viewModelScope.launch {
-            val result = binaryManager.importFromUri(uri)
+            // Run ALL blocking I/O (URI staging + extraction) on the IO
+            // dispatcher to prevent the UI from freezing while the
+            // ~50 MB file is copied and extracted.
+            val result = withContext(Dispatchers.IO) {
+                binaryManager.importFromUri(uri)
+            }
             result
                 .onSuccess { info ->
                     _state.value = _state.value.copy(

@@ -52,6 +52,9 @@
     <string name="action_close">Close</string>
     <string name="copied">Copied to clipboard</string>
 
+    <!-- Setup Wizard -->
+    <string name="setup_title">Setup</string>
+
     <!-- Errors -->
     <string name="err_no_binary">No opencode binary imported yet.</string>
     <string name="err_extract_runtime">Could not extract the musl runtime. Try reinstalling the app.</string>
