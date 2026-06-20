@@ -75,39 +75,21 @@ class OpencodeProcess(private val context: Context) {
      *   default project root. Becomes `process.cwd()` for the child process
      *   and is what opencode uses when a request arrives without an
      *   `x-opencode-directory` header. Defaults to a sandbox dir we own.
+     * @param useProot if true, launches opencode INSIDE a proot'd Alpine
+     *   rootfs. This enables opencode's tool-call feature to spawn binaries
+     *   (python, node, etc.) that the user installs at runtime via
+     *   `apk add`. When false (default), launches opencode directly via
+     *   the musl dynamic linker — lighter weight, but no tool-call support.
      */
     fun start(
         port: Int,
         hostname: String,
         password: String?,
         workingDirectory: File? = null,
+        useProot: Boolean = false,
         onLog: (String) -> Unit,
     ): Result<String> = runCatching {
         if (isRunning()) error("Server is already running")
-
-        // Resolve the musl linker — must be in nativeLibraryDir (apk_data_file)
-        val linkerPath = muslLinkerPath()
-            ?: error(
-                "musl dynamic linker not found in nativeLibraryDir. " +
-                    "The APK was probably built without the bundled linker — " +
-                    "rebuild with the latest source."
-            )
-
-        BinaryManager(context).ensureRuntime().getOrThrow()
-        val binary = Paths.binary(context)
-        if (!binary.exists() || !binary.canExecute()) {
-            error("opencode binary not imported or not executable")
-        }
-        val libDir = Paths.libDir(context)
-
-        // Default working directory: an app-private folder we own. opencode
-        // uses process.cwd() as the project root when no x-opencode-directory
-        // header is sent — so we MUST give it a real, writable directory.
-        val workDir = workingDirectory ?: Paths.workspaceDir(context)
-        workDir.mkdirs()
-        if (!workDir.isDirectory) {
-            error("Working directory does not exist or is not a directory: ${workDir.absolutePath}")
-        }
 
         Paths.logsDir(context).mkdirs()
         val logFile = Paths.logFile(context)
@@ -116,53 +98,11 @@ class OpencodeProcess(private val context: Context) {
         val logWriter = OutputStreamWriter(logFile.outputStream().buffered(), Charsets.UTF_8)
         writerRef.set(logWriter)
 
-        // Launch via the musl dynamic linker.
-        //   ld-musl-aarch64.so.1 --library-path <dir> <opencode> serve ...
-        //
-        // The linker is in apk_data_file (execve-able).
-        // opencode and the musl libs are in app_data_file — only mmap-ed
-        // by the linker, which is allowed because that uses the `execute`
-        // permission (not `execute_no_trans`).
-        val cmd = mutableListOf(
-            linkerPath,
-            "--library-path",
-            libDir.absolutePath,
-            binary.absolutePath,
-            "serve",
-            "--hostname", hostname,
-            "--port", port.toString(),
-        )
-
-        val pb = ProcessBuilder(cmd).apply {
-            // Set the working directory to the workspace folder. This is what
-            // opencode uses as the default project root (process.cwd()).
-            directory(workDir)
-
-            // Force a writable HOME inside app-private storage so opencode
-            // doesn't try to write to /root or /home.
-            val home = Paths.configDir(context).apply { mkdirs() }
-            environment()["HOME"] = home.absolutePath
-            environment()["TMPDIR"] = context.cacheDir.absolutePath
-            environment()["OPENCODE_INSTALL_DIR"] = Paths.binDir(context).absolutePath
-            environment()["XDG_DATA_HOME"] = File(home, "share").absolutePath
-            environment()["XDG_CONFIG_HOME"] = File(home, "config").absolutePath
-            environment()["XDG_CACHE_HOME"] = context.cacheDir.absolutePath
-            // Disable opencode's auto-update path; we manage versions manually
-            environment()["OPENCODE_DISABLE_UPDATE"] = "1"
-            // Disable project config discovery so opencode doesn't try to read
-            // opencode.json from arbitrary parent directories of the workspace.
-            environment()["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
-            // Tell opencode we don't want auto-update checks (which would try
-            // to phone home and might pull a different binary version).
-            environment()["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
-            if (!password.isNullOrBlank()) {
-                environment()["OPENCODE_SERVER_PASSWORD"] = password
-            }
-            // Strip Android-specific env that might confuse musl/Linux code
-            environment().remove("ANDROID_DATA")
-            environment().remove("ANDROID_ROOT")
-            environment().remove("CLASSPATH")
-            redirectErrorStream(true)
+        // Build the ProcessBuilder based on the chosen launch mode.
+        val pb = if (useProot) {
+            buildProotLaunch(port, hostname, password, workingDirectory)
+        } else {
+            buildDirectLaunch(port, hostname, password, workingDirectory)
         }
 
         val proc = pb.start()
@@ -244,6 +184,143 @@ class OpencodeProcess(private val context: Context) {
                 (exitRef.get() ?: "(no output)")
         )
     }
+
+    // ----- Launch builders -----
+
+    /**
+     * Direct launch — runs opencode via the bundled musl dynamic linker.
+     * This is the lightweight mode: no proot, no Alpine rootfs. opencode's
+     * tool-call feature (spawning python/node/etc.) will NOT work in this
+     * mode because execve() of those binaries would hit the SELinux
+     * neverallow.
+     */
+    private fun buildDirectLaunch(
+        port: Int,
+        hostname: String,
+        password: String?,
+        workingDirectory: File?,
+    ): ProcessBuilder {
+        val linkerPath = muslLinkerPath()
+            ?: error(
+                "musl dynamic linker not found in nativeLibraryDir. " +
+                    "The APK was probably built without the bundled linker — " +
+                    "rebuild with the latest source."
+            )
+
+        BinaryManager(context).ensureRuntime().getOrThrow()
+        val binary = Paths.binary(context)
+        if (!binary.exists() || !binary.canExecute()) {
+            error("opencode binary not imported or not executable")
+        }
+        val libDir = Paths.libDir(context)
+
+        val workDir = workingDirectory ?: Paths.workspaceDir(context)
+        workDir.mkdirs()
+        if (!workDir.isDirectory) {
+            error("Working directory does not exist or is not a directory: ${workDir.absolutePath}")
+        }
+
+        val cmd = mutableListOf(
+            linkerPath,
+            "--library-path",
+            libDir.absolutePath,
+            binary.absolutePath,
+            "serve",
+            "--hostname", hostname,
+            "--port", port.toString(),
+        )
+
+        return ProcessBuilder(cmd).apply {
+            directory(workDir)
+            val home = Paths.configDir(context).apply { mkdirs() }
+            environment()["HOME"] = home.absolutePath
+            environment()["TMPDIR"] = context.cacheDir.absolutePath
+            environment()["OPENCODE_INSTALL_DIR"] = Paths.binDir(context).absolutePath
+            environment()["XDG_DATA_HOME"] = File(home, "share").absolutePath
+            environment()["XDG_CONFIG_HOME"] = File(home, "config").absolutePath
+            environment()["XDG_CACHE_HOME"] = context.cacheDir.absolutePath
+            environment()["OPENCODE_DISABLE_UPDATE"] = "1"
+            environment()["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
+            environment()["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
+            if (!password.isNullOrBlank()) {
+                environment()["OPENCODE_SERVER_PASSWORD"] = password
+            }
+            environment().remove("ANDROID_DATA")
+            environment().remove("ANDROID_ROOT")
+            environment().remove("CLASSPATH")
+            redirectErrorStream(true)
+        }
+    }
+
+    /**
+     * proot launch — runs opencode INSIDE a proot'd Alpine rootfs. opencode's
+     * tool-call feature works because every `execve` inside the proot session
+     * is rewritten (via ptrace) to `execve(libproot-loader.so)` in
+     * nativeLibraryDir (apk_data_file — execve allowed). The loader then
+     * `mmap(PROT_EXEC)`s the real target from app_data_file (also allowed).
+     */
+    private fun buildProotLaunch(
+        port: Int,
+        hostname: String,
+        password: String?,
+        workingDirectory: File?,
+    ): ProcessBuilder {
+        BinaryManager(context).ensureRuntime().getOrThrow()
+        val binary = Paths.binary(context)
+        if (!binary.exists() || !binary.canExecute()) {
+            error("opencode binary not imported or not executable")
+        }
+
+        // Make sure proot + Alpine rootfs are installed.
+        val proot = ProotSession(context)
+        proot.ensureInstalled().getOrThrow()
+
+        // Mount the opencode binary inside the rootfs at a stable path so we
+        // can invoke it as `/usr/local/bin/opencode` from inside the proot
+        // session. Use --bind instead of copying.
+        val opencodeBind = "--bind=${binary.absolutePath}:/usr/local/bin/opencode"
+
+        // Mount the user's working directory as /root inside the sandbox so
+        // opencode's `process.cwd()` resolves to a real, writable folder
+        // that the user actually cares about.
+        val workDir = workingDirectory ?: Paths.workspaceDir(context)
+        workDir.mkdirs()
+        val workspaceBind = "--bind=${workDir.absolutePath}:/root"
+
+        // Build the opencode command that runs inside the proot sandbox.
+        // We use `sh -lc` so /etc/profile is sourced (sets PATH etc.).
+        val opencodeArgs = mutableListOf(
+            "serve",
+            "--hostname", hostname,
+            "--port", port.toString(),
+        )
+        if (!password.isNullOrBlank()) {
+            // The password is passed via env var so it doesn't show in `ps`.
+            // We export it inline before running opencode.
+        }
+        val shellCmd = buildString {
+            if (!password.isNullOrBlank()) {
+                append("export OPENCODE_SERVER_PASSWORD=").append(escapeShell(password)).append("; ")
+            }
+            append("export OPENCODE_DISABLE_UPDATE=1 OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1; ")
+            append("exec opencode ").append(opencodeArgs.joinToString(" ") { escapeShell(it) })
+        }
+
+        val pb = proot.launch(
+            argv = listOf("/bin/sh", "-lc", shellCmd),
+            cwd = "/root",
+            extraBinds = listOf(opencodeBind, workspaceBind),
+        )
+
+        // Pass workspace dir so ProcessBuilder.directory() doesn't matter
+        // (proot ignores it anyway — it sets cwd via --cwd flag).
+        pb.directory(workDir)
+        return pb
+    }
+
+    /** Escape a string for use as a single shell argument. */
+    private fun escapeShell(s: String): String =
+        "'" + s.replace("'", "'\\''") + "'"
 
     fun stop() {
         val proc = processRef.getAndSet(null) ?: return

@@ -33,6 +33,7 @@ data class ServerState(
     val hostname: String = "127.0.0.1",
     val password: String = "",
     val workspacePath: String = "",
+    val useProot: Boolean = false,
     val url: String? = null,
     val errorMessage: String? = null,
     val logs: String = "",
@@ -130,6 +131,10 @@ class ServerViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(workspacePath = path.trim())
     }
 
+    fun updateUseProot(value: Boolean) {
+        _state.value = _state.value.copy(useProot = value)
+    }
+
     /**
      * Imports a release file the user picked via the system file picker.
      * All file IO is dispatched to Dispatchers.IO so the UI thread is never
@@ -195,6 +200,7 @@ class ServerViewModel(app: Application) : AndroidViewModel(app) {
             hostname = s.hostname,
             password = s.password.ifBlank { null },
             workspace = s.workspacePath.ifBlank { null },
+            useProot = s.useProot,
         )
     }
 

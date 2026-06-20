@@ -228,6 +228,7 @@ fun HomeScreen(
                 onHostnameChange = viewModel::updateHostname,
                 onPasswordChange = viewModel::updatePassword,
                 onWorkspaceChange = viewModel::updateWorkspacePath,
+                onUseProotChange = viewModel::updateUseProot,
                 onStart = { viewModel.startServer(context) },
                 onStop = { viewModel.stopServer(context) },
             )
@@ -456,6 +457,7 @@ private fun SettingsSection(
     onHostnameChange: (String) -> Unit,
     onPasswordChange: (String) -> Unit,
     onWorkspaceChange: (String) -> Unit,
+    onUseProotChange: (Boolean) -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
 ) {
@@ -511,6 +513,57 @@ private fun SettingsSection(
                 enabled = !running,
                 visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
             )
+
+            // Alpine container toggle
+            androidx.compose.material3.Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = if (state.useProot)
+                    MaterialTheme.colorScheme.secondaryContainer
+                else
+                    MaterialTheme.colorScheme.surfaceContainerLow,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Default.Folder,
+                        contentDescription = null,
+                        tint = if (state.useProot)
+                            MaterialTheme.colorScheme.onSecondaryContainer
+                        else
+                            MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Run inside Alpine container (proot)",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = if (state.useProot)
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            else
+                                MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            "Lets opencode's tool-call feature spawn Python, Node, etc. " +
+                                "installed via `apk`. Adds startup overhead (~3 s).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (state.useProot)
+                                MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.85f)
+                            else
+                                MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    androidx.compose.material3.Switch(
+                        checked = state.useProot,
+                        onCheckedChange = onUseProotChange,
+                        enabled = !running,
+                    )
+                }
+            }
 
             Spacer(Modifier.height(4.dp))
 
