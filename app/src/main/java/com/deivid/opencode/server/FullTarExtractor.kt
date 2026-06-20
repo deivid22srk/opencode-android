@@ -1,6 +1,7 @@
 package com.deivid.opencode.server
 
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 
@@ -96,10 +97,12 @@ internal class FullTarExtractor(private val stream: InputStream) : AutoCloseable
                     }
                     skipPadding(size)
                     // Apply file mode (chmod) — only the executable bit
-                    // matters for us. Bits 0100 (owner exec) → set exec.
+                    // matters for us. If any of owner/group/other exec bits
+                    // are set, mark the file executable.
                     val mode = readOctal(header, 100, 8).toInt()
                     if (mode and 0b001_001_001 != 0) {
-                        target.setExecutable(true, (mode and 0o100) == 0)
+                        // Second arg = ownerOnly; false = executable for everyone
+                        target.setExecutable(true, (mode and 0b000000100) == 0)
                     }
                 }
                 '1', '2' -> {

@@ -141,7 +141,8 @@ class ProotSession(private val context: Context) {
         return ProcessBuilder(cmd).apply {
             environment()["PROOT_LOADER"] = loaderPath.absolutePath
             environment()["PROOT_LOADER_32"] = loaderPath.absolutePath
-            environment()["PROOT_TMP_DIR"] = paths.prootTmpDir.absolutePath.apply { mkdirs() }
+            paths.prootTmpDir.mkdirs()
+            environment()["PROOT_TMP_DIR"] = paths.prootTmpDir.absolutePath
             // Disable seccomp acceleration — Android often restricts seccomp
             // install for untrusted apps.
             environment()["PROOT_NO_SECCOMP"] = "1"
