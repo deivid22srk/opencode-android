@@ -147,7 +147,7 @@ class ServerViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         OpencodeService.start(
-            context = context,
+            ctx = context,
             port = s.port,
             hostname = s.hostname,
             password = s.password.ifBlank { null },
