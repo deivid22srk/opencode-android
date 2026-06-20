@@ -173,14 +173,14 @@ class BinaryManager(private val context: Context) {
      * Ensures the network configuration files exist so opencode (Bun) can
      * make HTTPS requests to LLM providers:
      *
-     * 1. **CA certificate bundle** — Android stores system CAs in
+     * 1. CA certificate bundle — Android stores system CAs in
      *    /system/etc/security/cacerts/ as individual PEM files. Bun looks
      *    for /etc/ssl/certs/ca-certificates.crt (Debian-style bundle) which
      *    doesn't exist on Android. We concatenate all Android system CAs
      *    into a single file and point SSL_CERT_FILE + NODE_EXTRA_CA_CERTS
      *    at it.
      *
-     * 2. **/etc/resolv.conf** — musl's DNS resolver reads this file to find
+     * 2. resolv.conf — musl's DNS resolver reads this file to find
      *    nameservers. We write a synthetic one with Google + Cloudflare DNS.
      *
      * Without these, opencode can start the server but every fetch() to an
