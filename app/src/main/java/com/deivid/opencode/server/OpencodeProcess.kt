@@ -21,7 +21,12 @@ class OpencodeProcess(private val context: Context) {
 
     /** Pid of the running process, or -1 if not running. */
     val pid: Int
-        get() = processRef.get()?.pid() ?: -1
+        get() = try {
+            // Process.pid() requires Java 9 / Android API 30+.
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                processRef.get()?.pid() ?: -1
+            } else -1
+        } catch (_: NoSuchMethodError) { -1 }
 
     fun isRunning(): Boolean = processRef.get()?.isAlive == true
 
@@ -141,10 +146,14 @@ class OpencodeProcess(private val context: Context) {
                 // If process exited without printing the URL, capture the tail
                 // of the log so the caller can surface a meaningful error.
                 if (urlRef.get() == null) {
-                    val tail = sb.toString().lineSequence()
+                    val lines = sb.toString().lineSequence()
                         .filter { it.isNotBlank() }
-                        .takeLast(8)
-                        .joinToString("\n")
+                        .toList()
+                    val tail = if (lines.size > 8) {
+                        lines.takeLast(8).joinToString("\n")
+                    } else {
+                        lines.joinToString("\n")
+                    }
                     exitRef.set(tail.ifBlank { "opencode exited without printing a URL" })
                     urlLatch.countDown()
                 }
