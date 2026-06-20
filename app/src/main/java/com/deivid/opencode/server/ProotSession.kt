@@ -183,12 +183,21 @@ class ProotSession(private val context: Context) {
             // can't create in nativeLibDir (read-only). So we ship the actual
             // bytes as libtalloc.so in nativeLibDir, and create a symlink
             // libtalloc.so.2 → libtalloc.so in filesDir/proot/lib at runtime.
-            // LD_LIBRARY_PATH must include BOTH dirs so bionic's linker64 can:
-            //   - find libandroid-shmem.so (in nativeLibDir)
-            //   - resolve libtalloc.so.2 via the symlink (in filesDir/proot/lib)
+            //
+            // We also include filesDir/opencode/lib/ — that's where opencode's
+            // C++ deps (libstdc++.so.6, libgcc_s.so.1) live. The Alpine base
+            // rootfs doesn't ship them, so any musl-linked binary DT_NEEDEDing
+            // libstdc++ (like opencode) would fail to load inside the proot
+            // sandbox without this entry.
+            //
+            // LD_LIBRARY_PATH must include ALL THREE dirs:
+            //   - nativeLibDir             → libandroid-shmem.so, libtalloc.so
+            //   - filesDir/proot/lib       → libtalloc.so.2 symlink
+            //   - filesDir/opencode/lib    → libstdc++.so.6, libgcc_s.so.1
             val ldLibPath = listOfNotNull(
                 nativeLibDir,
                 File(context.filesDir, "proot/lib").takeIf { it.exists() }?.absolutePath,
+                File(context.filesDir, "opencode/lib").takeIf { it.exists() }?.absolutePath,
             ).joinToString(":")
             environment()["LD_LIBRARY_PATH"] = ldLibPath
             // Clean environment inside the sandbox — let /etc/profile set PATH

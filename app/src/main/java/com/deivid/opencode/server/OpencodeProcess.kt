@@ -288,22 +288,32 @@ class OpencodeProcess(private val context: Context) {
         val workspaceBind = "--bind=${workDir.absolutePath}:/root"
 
         // Build the opencode command that runs inside the proot sandbox.
-        // We use `sh -lc` so /etc/profile is sourced (sets PATH etc.).
+        //
+        // We can't just `exec opencode` because opencode's DT_NEEDED entries
+        // (libstdc++.so.6, libgcc_s.so.1) aren't in the Alpine base rootfs.
+        // Instead, we explicitly invoke Alpine's musl dynamic linker
+        // (/lib/ld-musl-aarch64.so.1) with --library-path pointing at our
+        // bundled C++ deps. This is the same trick we use in direct mode,
+        // just inside the proot sandbox.
         val opencodeArgs = mutableListOf(
             "serve",
             "--hostname", hostname,
             "--port", port.toString(),
         )
-        if (!password.isNullOrBlank()) {
-            // The password is passed via env var so it doesn't show in `ps`.
-            // We export it inline before running opencode.
-        }
+        val opencodeLibDir = Paths.libDir(context).absolutePath
         val shellCmd = buildString {
             if (!password.isNullOrBlank()) {
                 append("export OPENCODE_SERVER_PASSWORD=").append(escapeShell(password)).append("; ")
             }
             append("export OPENCODE_DISABLE_UPDATE=1 OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1; ")
-            append("exec opencode ").append(opencodeArgs.joinToString(" ") { escapeShell(it) })
+            // Launch opencode via Alpine's musl dynamic linker with our
+            // bundled libstdc++.so.6 + libgcc_s.so.1 on the library path.
+            // The path filesDir/opencode/lib is bind-mounted inside the
+            // sandbox at the same path, so this resolves correctly.
+            append("exec /lib/ld-musl-aarch64.so.1 ")
+                .append("--library-path ").append(escapeShell(opencodeLibDir)).append(" ")
+                .append("/usr/local/bin/opencode ")
+                .append(opencodeArgs.joinToString(" ") { escapeShell(it) })
         }
 
         val pb = proot.launch(
@@ -312,24 +322,10 @@ class OpencodeProcess(private val context: Context) {
             extraBinds = listOf(opencodeBind, workspaceBind),
         )
 
-        // CRITICAL: opencode is musl-linked and DT_NEEDEDs libstdc++.so.6 and
-        // libgcc_s.so.1. The Alpine base rootfs does NOT ship these (Alpine
-        // base is musl-only, no C++ stdlib). We already bundle them in
-        // filesDir/opencode/lib/ for direct-launch mode — we need to make
-        // them findable by the musl dynamic linker INSIDE the proot sandbox
-        // too.
-        //
-        // Since we have --bind=<filesDir>:<filesDir>, the path
-        //   /data/data/<pkg>/files/opencode/lib/
-        // is valid inside the sandbox. Adding it to LD_LIBRARY_PATH lets
-        // Alpine's musl linker find our bundled libstdc++.so.6 and
-        // libgcc_s.so.1 when it loads opencode.
-        val opencodeLibDir = Paths.libDir(context).absolutePath
-        val existingLdPath = pb.environment()["LD_LIBRARY_PATH"] ?: ""
-        pb.environment()["LD_LIBRARY_PATH"] = listOf(
-            existingLdPath,
-            opencodeLibDir,
-        ).filter { it.isNotEmpty() }.joinToString(":")
+        // Note: ProotSession.launch() already sets LD_LIBRARY_PATH to include
+        // nativeLibDir, filesDir/proot/lib (libtalloc symlink), and
+        // filesDir/opencode/lib (libstdc++ + libgcc_s for opencode's C++ deps).
+        // No additional env setup needed here.
 
         // Pass workspace dir so ProcessBuilder.directory() doesn't matter
         // (proot ignores it anyway — it sets cwd via --cwd flag).
