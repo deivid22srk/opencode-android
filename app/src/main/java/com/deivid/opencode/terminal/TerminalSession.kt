@@ -85,19 +85,20 @@ class TerminalSession(private val context: Context) {
 
             // Set up the prompt and environment. We send these as initial
             // commands so the shell is configured before the user types.
-            val initScript = """
-                export PS1='\${GREEN}\u\${RESET}@\h:\w# '
-                export GREEN='\033[01;32m'
-                export RESET='\033[0m'
-                export TERM=xterm-256color
-                export HOME=/root
-                export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-                stty sane 2>/dev/null || true
-                echo ""
-                echo -e '\033[01;32mWelcome to Alpine Linux (proot)\033[0m'
-                echo -e 'Type commands below. Try: ls, apk update, apk add python3'
-                echo ""
-            """.trimIndent()
+            val d = "${'$'}"  // literal dollar sign, avoiding Kotlin template syntax
+            val initScript = buildString {
+                append("export PS1='${d}{GREEN}\\u${d}{RESET}@\\h:\\w# '\n")
+                append("export GREEN='\\033[01;32m'\n")
+                append("export RESET='\\033[0m'\n")
+                append("export TERM=xterm-256color\n")
+                append("export HOME=/root\n")
+                append("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n")
+                append("stty sane 2>/dev/null || true\n")
+                append("echo ''\n")
+                append("echo -e '\\033[01;32mWelcome to Alpine Linux (proot)\\033[0m'\n")
+                append("echo -e 'Type commands below. Try: ls, apk update, apk add python3'\n")
+                append("echo ''\n")
+            }
             // Send the init script line by line, each followed by newline.
             for (line in initScript.split('\n')) {
                 stdin?.write((line + "\n").toByteArray())
