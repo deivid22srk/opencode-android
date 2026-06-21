@@ -389,31 +389,43 @@ class OpencodeProcess(private val context: Context) {
         // We do NOT use 'exec' for opencode — instead we run it directly and
         // then print the exit code. This way the shell stays alive long enough
         // to report the error, and we see ALL output.
-        val d = "${'$'}"  // literal dollar sign
         val opencodeArgs = listOf(
             "serve",
             "--hostname", hostname,
             "--port", port.toString(),
         )
         val shellCmd = buildString {
-            // Diagnostic output — helps us see what's happening inside proot
+            // Diagnostic output — helps us see what's happening inside proot.
+            //
+            // IMPORTANT: Do NOT use backticks before $() or $VAR — they start
+            // a new command substitution in POSIX sh, causing the shell to try
+            // to execute the result of the inner substitution as another command
+            // (e.g. `$(whoami)` → tries to execute "root" as a command →
+            // "Function not implemented").  Unmatched backticks also cause
+            // "EOF in backquote substitution" which corrupts the entire script.
+            // Use double-quoted echo with $() or $VAR instead.
+            //
+            // Also: BusyBox od does NOT support the -t x1z format flag (the
+            // trailing 'z' is a GNU coreutils extension).  Use -t x1 instead.
+            // The musl linker does not support --version without a program path;
+            // test it by running a simple command through it instead.
             append("echo '=== PROOT SESSION STARTED ==='\n")
-            append("echo 'whoami: '`${d}(whoami 2>&1 || echo 'FAIL')\n")
-            append("echo 'pwd: '`${d}(pwd 2>&1 || echo 'FAIL')\n")
-            append("echo 'PATH='`${d}PATH\n")
-            append("echo 'HOME='`${d}HOME\n")
+            append("echo \"whoami: \$(whoami 2>&1 || echo 'FAIL')\"\n")
+            append("echo \"pwd: \$(pwd 2>&1 || echo 'FAIL')\"\n")
+            append("echo \"PATH=\$PATH\"\n")
+            append("echo \"HOME=\$HOME\"\n")
             append("echo '--- File checks ---'\n")
             append("ls -la /usr/local/bin/opencode 2>&1 || echo 'FAIL: opencode not found'\n")
             append("ls -la /usr/lib/libstdc++.so.6 2>&1 || echo 'FAIL: libstdc++ not found'\n")
             append("ls -la /usr/lib/libgcc_s.so.1 2>&1 || echo 'FAIL: libgcc not found'\n")
             append("ls -la /lib/ld-musl-aarch64.so.1 2>&1 || echo 'FAIL: musl linker not found'\n")
             append("echo '--- ELF check ---'\n")
-            append("head -c 4 /usr/local/bin/opencode | od -A x -t x1z 2>&1 || echo 'FAIL: cant read opencode'\n")
+            append("head -c 4 /usr/local/bin/opencode | od -A x -t x1 2>&1 || echo 'FAIL: cant read opencode'\n")
             append("echo '--- /proc check ---'\n")
             append("ls /proc/self/exe 2>&1 || echo 'FAIL: /proc/self/exe not accessible'\n")
-            append("cat /proc/self/exe 2>/dev/null | head -c 4 | od -A x -t x1z 2>&1 || echo 'FAIL: cant read /proc/self/exe'\n")
+            append("cat /proc/self/exe 2>/dev/null | head -c 4 | od -A x -t x1 2>&1 || echo 'FAIL: cant read /proc/self/exe'\n")
             append("echo '--- musl linker test ---'\n")
-            append("/lib/ld-musl-aarch64.so.1 --version 2>&1 || echo 'FAIL: musl linker cant run'\n")
+            append("/lib/ld-musl-aarch64.so.1 /usr/local/bin/opencode --version 2>&1 || echo 'FAIL: musl linker cant run opencode'\n")
             append("echo '=== STARTING OPENCODE ==='\n")
             // Set env vars
             if (!password.isNullOrBlank()) {
@@ -424,7 +436,7 @@ class OpencodeProcess(private val context: Context) {
             append("/usr/local/bin/opencode ")
                 .append(opencodeArgs.joinToString(" ") { escapeShell(it) })
                 .append(" 2>&1\n")
-            append("echo '=== OPENCODE EXITED WITH CODE '`${d}?' ==='\n")
+            append("echo \"=== OPENCODE EXITED WITH CODE \$? ===\"\n")
         }
 
         val pb = proot.launch(
