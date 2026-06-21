@@ -382,57 +382,56 @@ class OpencodeProcess(private val context: Context) {
 
         // Build the opencode command that runs inside the proot sandbox.
         //
-        // We run a diagnostic shell script FIRST, then try to start opencode.
-        // The diagnostic output helps us understand what's failing inside
-        // the proot session (file existence, permissions, ELF validity, etc.).
+        // KEY INSIGHT: opencode is a Bun --compile binary that is dynamically
+        // linked against musl libc, libstdc++.so.6, and libgcc_s.so.1.  Its
+        // ELF PT_INTERP points at /lib/ld-musl-aarch64.so.1.  When the kernel
+        // loads the binary, it invokes the PT_INTERP as the dynamic linker,
+        // which then searches for shared libraries via LD_LIBRARY_PATH and
+        // the default paths (/usr/lib, /lib).
         //
-        // We do NOT use 'exec' for opencode — instead we run it directly and
-        // then print the exit code. This way the shell stays alive long enough
-        // to report the error, and we see ALL output.
+        // Inside the proot sandbox, running /usr/local/bin/opencode directly
+        // fails with "Not a valid dynamic program" because the musl linker
+        // (the Alpine rootfs one) cannot find libstdc++.so.6 and libgcc_s.so.1
+        // in its library search path — they live in /usr/lib/ but the linker's
+        // default search may not include that path, or the linker may not
+        // recognize the binary's dynamic format correctly when invoked as
+        // PT_INTERP by the kernel.
+        //
+        // The fix is to invoke opencode THROUGH the musl linker with an
+        // explicit --library-path, exactly like the direct launch mode does.
+        // This gives the linker the information it needs to resolve DT_NEEDED
+        // entries (libstdc++.so.6, libgcc_s.so.1).
         val opencodeArgs = listOf(
             "serve",
             "--hostname", hostname,
             "--port", port.toString(),
         )
         val shellCmd = buildString {
-            // Diagnostic output — helps us see what's happening inside proot.
-            //
-            // IMPORTANT: Do NOT use backticks before $() or $VAR — they start
-            // a new command substitution in POSIX sh, causing the shell to try
-            // to execute the result of the inner substitution as another command
-            // (e.g. `$(whoami)` → tries to execute "root" as a command →
-            // "Function not implemented").  Unmatched backticks also cause
-            // "EOF in backquote substitution" which corrupts the entire script.
-            // Use double-quoted echo with $() or $VAR instead.
-            //
-            // Also: BusyBox od does NOT support the -t x1z format flag (the
-            // trailing 'z' is a GNU coreutils extension).  Use -t x1 instead.
-            // The musl linker does not support --version without a program path;
-            // test it by running a simple command through it instead.
+            // Minimal diagnostics — keep it short so opencode starts faster.
             append("echo '=== PROOT SESSION STARTED ==='\n")
             append("echo \"whoami: \$(whoami 2>&1 || echo 'FAIL')\"\n")
             append("echo \"pwd: \$(pwd 2>&1 || echo 'FAIL')\"\n")
-            append("echo \"PATH=\$PATH\"\n")
-            append("echo \"HOME=\$HOME\"\n")
+            append("echo \"PATH=\$PATH HOME=\$HOME\"\n")
             append("echo '--- File checks ---'\n")
-            append("ls -la /usr/local/bin/opencode 2>&1 || echo 'FAIL: opencode not found'\n")
-            append("ls -la /usr/lib/libstdc++.so.6 2>&1 || echo 'FAIL: libstdc++ not found'\n")
-            append("ls -la /usr/lib/libgcc_s.so.1 2>&1 || echo 'FAIL: libgcc not found'\n")
-            append("ls -la /lib/ld-musl-aarch64.so.1 2>&1 || echo 'FAIL: musl linker not found'\n")
-            append("echo '--- ELF check ---'\n")
-            append("head -c 4 /usr/local/bin/opencode | od -A x -t x1 2>&1 || echo 'FAIL: cant read opencode'\n")
-            append("echo '--- /proc check ---'\n")
-            append("ls /proc/self/exe 2>&1 || echo 'FAIL: /proc/self/exe not accessible'\n")
-            append("cat /proc/self/exe 2>/dev/null | head -c 4 | od -A x -t x1 2>&1 || echo 'FAIL: cant read /proc/self/exe'\n")
-            append("echo '--- musl linker test ---'\n")
-            append("/lib/ld-musl-aarch64.so.1 /usr/local/bin/opencode --version 2>&1 || echo 'FAIL: musl linker cant run opencode'\n")
+            append("ls -la /usr/local/bin/opencode /usr/lib/libstdc++.so.6 /usr/lib/libgcc_s.so.1 /lib/ld-musl-aarch64.so.1 2>&1\n")
             append("echo '=== STARTING OPENCODE ==='\n")
             // Set env vars
             if (!password.isNullOrBlank()) {
                 append("export OPENCODE_SERVER_PASSWORD=").append(escapeShell(password)).append("; ")
             }
             append("export OPENCODE_DISABLE_UPDATE=1 OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1; ")
-            // Run opencode WITHOUT exec so we can capture the exit code
+            // CRITICAL: Run opencode through the musl dynamic linker with
+            // explicit --library-path.  This mirrors the direct launch mode
+            // (buildDirectLaunch) and ensures the linker can find libstdc++
+            // and libgcc_s in /usr/lib/.
+            //
+            // Without --library-path, the musl linker only searches its
+            // built-in default paths and LD_LIBRARY_PATH.  ProotSession
+            // sets LD_LIBRARY_PATH to include /usr/lib, but the linker
+            // invoked as PT_INTERP by the kernel does NOT inherit the
+            // proot ProcessBuilder's environment — it inherits the shell's
+            // environment.  Using --library-path makes it explicit.
+            append("/lib/ld-musl-aarch64.so.1 --library-path /usr/lib ")
             append("/usr/local/bin/opencode ")
                 .append(opencodeArgs.joinToString(" ") { escapeShell(it) })
                 .append(" 2>&1\n")
