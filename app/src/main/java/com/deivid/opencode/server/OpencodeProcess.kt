@@ -190,10 +190,15 @@ class OpencodeProcess(private val context: Context) {
 
     /**
      * Direct launch — runs opencode via the bundled musl dynamic linker.
-     * This is the lightweight mode: no proot, no Alpine rootfs. opencode's
-     * tool-call feature (spawning python/node/etc.) will NOT work in this
-     * mode because execve() of those binaries would hit the SELinux
-     * neverallow.
+     *
+     * **IMPORTANT**: This mode only works with PIE (ET_DYN) binaries.
+     * Most opencode releases are built as ET_EXEC (non-PIE), which the
+     * musl dynamic linker cannot load when invoked from the command line
+     * (musl's ldso only accepts ET_DYN/PIE for command-line invocation;
+     * the kernel's PT_INTERP path works for both, but we must execve the
+     * linker from nativeLibraryDir due to SELinux, which forces the
+     * command-line path).  When the binary is ET_EXEC, this method
+     * automatically falls back to proot mode.
      */
     private fun buildDirectLaunch(
         port: Int,
@@ -201,6 +206,27 @@ class OpencodeProcess(private val context: Context) {
         password: String?,
         workingDirectory: File?,
     ): ProcessBuilder {
+        BinaryManager(context).ensureRuntime().getOrThrow()
+        BinaryManager(context).ensureNetworkConfig().getOrThrow()
+        val binary = Paths.binary(context)
+        if (!binary.exists() || !binary.canExecute()) {
+            error("opencode binary not imported or not executable")
+        }
+
+        // Check if the binary is ET_EXEC (non-PIE).  The musl dynamic
+        // linker (ld-musl-aarch64.so.1) only supports loading ET_DYN (PIE)
+        // executables when invoked from the command line.  ET_EXEC binaries
+        // fail with "Not a valid dynamic program".  When we detect ET_EXEC,
+        // fall back to proot mode where the kernel handles PT_INTERP
+        // correctly (the PT_INTERP path works for both ET_EXEC and ET_DYN).
+        val isPie = isPieBinary(binary)
+        if (!isPie) {
+            android.util.Log.w(TAG,
+                "opencode binary is ET_EXEC (non-PIE); musl linker cannot " +
+                    "load it from the command line. Falling back to proot mode.")
+            return buildProotLaunch(port, hostname, password, workingDirectory)
+        }
+
         val linkerPath = muslLinkerPath()
             ?: error(
                 "musl dynamic linker not found in nativeLibraryDir. " +
@@ -208,12 +234,6 @@ class OpencodeProcess(private val context: Context) {
                     "rebuild with the latest source."
             )
 
-        BinaryManager(context).ensureRuntime().getOrThrow()
-        BinaryManager(context).ensureNetworkConfig().getOrThrow()
-        val binary = Paths.binary(context)
-        if (!binary.exists() || !binary.canExecute()) {
-            error("opencode binary not imported or not executable")
-        }
         val libDir = Paths.libDir(context)
 
         val workDir = workingDirectory ?: Paths.workspaceDir(context)
@@ -280,6 +300,47 @@ class OpencodeProcess(private val context: Context) {
             environment().remove("ANDROID_ROOT")
             environment().remove("CLASSPATH")
             redirectErrorStream(true)
+        }
+    }
+
+    /**
+     * Checks whether the given ELF binary is PIE (Position-Independent
+     * Executable, ELF type ET_DYN).  Returns `true` for PIE/ET_DYN,
+     * `false` for ET_EXEC (non-PIE) or unreadable files.
+     *
+     * The musl dynamic linker only supports loading ET_DYN binaries when
+     * invoked from the command line.  ET_EXEC binaries must be loaded via
+     * the kernel's PT_INTERP mechanism (which works for both types).
+     */
+    private fun isPieBinary(binary: File): Boolean {
+        try {
+            binary.inputStream().use { input ->
+                // ELF header: bytes 0-3 = magic (7f 45 4c 46)
+                // byte 4 = class (1=32-bit, 2=64-bit)
+                // e_type is at offset 16 (2 bytes, little-endian)
+                val header = ByteArray(18)
+                var read = 0
+                while (read < header.size) {
+                    val n = input.read(header, read, header.size - read)
+                    if (n <= 0) break
+                    read += n
+                }
+                if (read < 18) return false
+                // Verify ELF magic
+                if (header[0] != 0x7f.toByte() ||
+                    header[1] != 'E'.code.toByte() ||
+                    header[2] != 'L'.code.toByte() ||
+                    header[3] != 'F'.code.toByte()
+                ) return false
+                // e_type at offset 16: ET_EXEC=2, ET_DYN=3
+                val eType = (header[16].toInt() and 0xFF) or
+                    ((header[17].toInt() and 0xFF) shl 8)
+                // PIE binaries have type ET_DYN (3)
+                return eType == 3
+            }
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "Failed to check ELF type of ${binary.absolutePath}", e)
+            return false
         }
     }
 
@@ -382,56 +443,56 @@ class OpencodeProcess(private val context: Context) {
 
         // Build the opencode command that runs inside the proot sandbox.
         //
-        // KEY INSIGHT: opencode is a Bun --compile binary that is dynamically
-        // linked against musl libc, libstdc++.so.6, and libgcc_s.so.1.  Its
-        // ELF PT_INTERP points at /lib/ld-musl-aarch64.so.1.  When the kernel
-        // loads the binary, it invokes the PT_INTERP as the dynamic linker,
-        // which then searches for shared libraries via LD_LIBRARY_PATH and
-        // the default paths (/usr/lib, /lib).
+        // opencode is a Bun --compile binary that is dynamically linked
+        // against musl libc, libstdc++.so.6, and libgcc_s.so.1.  Its ELF
+        // PT_INTERP points at /lib/ld-musl-aarch64.so.1.
         //
-        // Inside the proot sandbox, running /usr/local/bin/opencode directly
-        // fails with "Not a valid dynamic program" because the musl linker
-        // (the Alpine rootfs one) cannot find libstdc++.so.6 and libgcc_s.so.1
-        // in its library search path — they live in /usr/lib/ but the linker's
-        // default search may not include that path, or the linker may not
-        // recognize the binary's dynamic format correctly when invoked as
-        // PT_INTERP by the kernel.
+        // IMPORTANT: We invoke opencode DIRECTLY — NOT through the musl
+        // linker as a command-line wrapper.  When the kernel loads the
+        // binary via execve(), it reads PT_INTERP and invokes the musl
+        // linker as the dynamic interpreter automatically.  That code path
+        // works for both ET_EXEC and ET_DYN (PIE) binaries.
         //
-        // The fix is to invoke opencode THROUGH the musl linker with an
-        // explicit --library-path, exactly like the direct launch mode does.
-        // This gives the linker the information it needs to resolve DT_NEEDED
-        // entries (libstdc++.so.6, libgcc_s.so.1).
+        // Invoking the musl linker explicitly on the command line
+        //   e.g. /lib/ld-musl-aarch64.so.1 --library-path /usr/lib /usr/local/bin/opencode
+        // does NOT work for ET_EXEC binaries: musl's ldso only supports
+        // loading ET_DYN (PIE) executables when invoked directly from the
+        // command line, and rejects ET_EXEC with "Not a valid dynamic
+        // program".  The kernel's PT_INTERP path does not have this
+        // limitation because it passes the binary's metadata to the linker
+        // via the auxiliary vector (AT_PHDR, AT_PHNUM, etc.), bypassing
+        // the ET_DYN-only check in ldso's command-line path.
+        //
+        // The libraries are found via:
+        //  1. DT_RPATH embedded in the opencode binary (set at build time)
+        //  2. LD_LIBRARY_PATH set by ProotSession (includes /usr/lib)
+        //  3. The musl linker's built-in default search paths (/usr/lib, /lib)
         val opencodeArgs = listOf(
             "serve",
             "--hostname", hostname,
             "--port", port.toString(),
+            "--print-logs",
+            "--log-level", "DEBUG",
         )
         val shellCmd = buildString {
             // Minimal diagnostics — keep it short so opencode starts faster.
             append("echo '=== PROOT SESSION STARTED ==='\n")
             append("echo \"whoami: \$(whoami 2>&1 || echo 'FAIL')\"\n")
             append("echo \"pwd: \$(pwd 2>&1 || echo 'FAIL')\"\n")
-            append("echo \"PATH=\$PATH HOME=\$HOME\"\n")
             append("echo '--- File checks ---'\n")
             append("ls -la /usr/local/bin/opencode /usr/lib/libstdc++.so.6 /usr/lib/libgcc_s.so.1 /lib/ld-musl-aarch64.so.1 2>&1\n")
             append("echo '=== STARTING OPENCODE ==='\n")
-            // Set env vars
+            // Set env vars — network config, XDG dirs, opencode flags.
+            // Inside proot, /etc/resolv.conf is written by ProotSession
+            // (writeResolvConf), so DNS works natively via musl's resolver.
+            // CA certs are also available via /etc/ssl/certs in the rootfs.
             if (!password.isNullOrBlank()) {
                 append("export OPENCODE_SERVER_PASSWORD=").append(escapeShell(password)).append("; ")
             }
             append("export OPENCODE_DISABLE_UPDATE=1 OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1; ")
-            // CRITICAL: Run opencode through the musl dynamic linker with
-            // explicit --library-path.  This mirrors the direct launch mode
-            // (buildDirectLaunch) and ensures the linker can find libstdc++
-            // and libgcc_s in /usr/lib/.
-            //
-            // Without --library-path, the musl linker only searches its
-            // built-in default paths and LD_LIBRARY_PATH.  ProotSession
-            // sets LD_LIBRARY_PATH to include /usr/lib, but the linker
-            // invoked as PT_INTERP by the kernel does NOT inherit the
-            // proot ProcessBuilder's environment — it inherits the shell's
-            // environment.  Using --library-path makes it explicit.
-            append("/lib/ld-musl-aarch64.so.1 --library-path /usr/lib ")
+            // Run opencode directly.  The kernel will invoke PT_INTERP
+            // (/lib/ld-musl-aarch64.so.1) automatically and load DT_NEEDED
+            // libraries (libstdc++.so.6, libgcc_s.so.1) from /usr/lib/.
             append("/usr/local/bin/opencode ")
                 .append(opencodeArgs.joinToString(" ") { escapeShell(it) })
                 .append(" 2>&1\n")
